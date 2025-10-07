@@ -4,23 +4,23 @@ Process downloaded bird recordings: detect, clip, and generate embeddings.
 Uses BirdNET-Analyzer CLI for efficient batch processing.
 
 Usage:
-    python process_species.py --config config_limosa_limosa.yaml
-    python process_species.py --config config_emberiza_citrinella.yaml
-    python process_species.py --config config_sylvia_atricapilla.yaml
-    python process_species.py --species "Sylvia atricapilla" --skip-confirm
-    python process_species.py --config config_turdus_merula.yaml
-    python process_species.py --config config_parus_major.yaml
-    python process_species.py --config config_corvus_corax.yaml
-    python process_species.py --config config_passer_montanus.yaml
-    python process_species.py --config config_passer_domesticus.yaml
-    python process_species.py --config config_strix_aluco.yaml
-    python process_species.py --config config_asio_otus.yaml
-    python process_species.py --config config_chloris_chloris.yaml
-    python process_species.py --config config_phylloscopus_collybita.yaml
-    python process_species.py --config config_phylloscopus_trochilus.yaml
-    python process_species.py --config config_acrocephalus_scirpaceus.yaml
-    python process_species.py --config config_curruca_communis.yaml
-    python process_species.py --config config_cettia_cetti.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_limosa_limosa.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_emberiza_citrinella.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_sylvia_atricapilla.yaml
+    python xc_scripts/process_species.py --species "Sylvia atricapilla" --skip-confirm
+    python xc_scripts/process_species.py --config xc_configs/config_turdus_merula.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_parus_major.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_corvus_corax.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_passer_montanus.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_passer_domesticus.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_strix_aluco.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_asio_otus.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_chloris_chloris.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_phylloscopus_collybita.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_phylloscopus_trochilus.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_curruca_communis.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_cettia_cetti.yaml
 
 """
 
@@ -565,8 +565,14 @@ def load_config(config_path: Optional[Path] = None) -> Dict:
         }
     }
     
-    if config_path and config_path.exists():
-        with open(config_path) as f:
+    if config_path:
+        requested_path = config_path
+        resolved_path = config_path if config_path.is_absolute() else (Path.cwd() / config_path)
+        if not resolved_path.exists():
+            raise SystemExit(
+                f"Config file '{requested_path}' not found. Use '--config xc_configs/<name>.yaml'."
+            )
+        with open(resolved_path) as f:
             config = yaml.safe_load(f)
         # Merge with defaults
         for key in default_config:

@@ -4,7 +4,7 @@ UMAP Yellowhammer Visualization with Interactive Zoom
 Bokeh Server Application - COMPLETE VERSION
 
 To run:
-1. Save this file as 'umap_yellowhammer_app.py'
+1. Save this file as 'xc_scripts/umap_app.py'
 2. Start audio server in separate terminal:
    cd "/Volumes/Z Slim/zslim_birdcluster/clips/sylvia_atricapilla"
    cd "/Volumes/Z Slim/zslim_birdcluster/clips/turdus_merula"
@@ -14,31 +14,32 @@ To run:
    python3 -m http.server 8765
 3. Run the Bokeh app:
     cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
-   bokeh serve --show umap_app.py --args --config config_limosa_limosa.yaml
-   bokeh serve --show umap_app.py --args --config config_emberiza_citrinella.yaml
-   bokeh serve --show umap_app.py --args --config config_fringilla_coelebs.yaml
-   bokeh serve --show umap_app.py --args --config config_sylvia_atricapilla.yaml
-   bokeh serve --show umap_app.py --args --config config_turdus_merula.yaml
-   bokeh serve --show umap_app.py --args --config config_parus_major.yaml
-   bokeh serve --show umap_app.py --args --config config_corvus_corax.yaml
-   bokeh serve --show umap_app.py --args --config config_passer_montanus.yaml
-   bokeh serve --show umap_app.py --args --config config_passer_domesticus.yaml
-    bokeh serve --show umap_app.py --args --config config_chloris_chloris.yaml
-    bokeh serve --show umap_app.py --args --config config_strix_aluco.yaml
-    bokeh serve --show umap_app.py --args --config config_asio_otus.yaml
-   bokeh serve --show umap_app.py --args --config config_curruca_communis.yaml
-   bokeh serve --show umap_app.py --args --config config_cettia_cetti.yaml
-    bokeh serve --show umap_app.py --args --config config_phylloscopus_collybita.yaml
-    bokeh serve --show umap_app.py --args --config config_phylloscopus_trochilus.yaml
-    bokeh serve --show umap_app.py --args --config config_acrocephalus_scirpaceus.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_limosa_limosa.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_emberiza_citrinella.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_fringilla_coelebs.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_sylvia_atricapilla.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_turdus_merula.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_parus_major.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_corvus_corax.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_montanus.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_domesticus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_chloris_chloris.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_strix_aluco.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_asio_otus.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_curruca_communis.yaml
+   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_cettia_cetti.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_collybita.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_trochilus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_acrocephalus_scirpaceus.yaml
    Or without config (uses defaults):
-   bokeh serve --show umap_app.py
+   bokeh serve --show xc_scripts/umap_app.py
 """
 
 import argparse
 import sys
 import yaml
 from pathlib import Path
+from typing import Optional
 from importlib_metadata import metadata
 import pandas as pd
 import numpy as np
@@ -66,7 +67,8 @@ print("=" * 80)
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 
-def load_config(config_path=None):
+
+def load_config(config_path: Optional[Path] = None):
     """Load configuration from file or use defaults"""
     
     # Default configuration with analysis parameters
@@ -94,8 +96,14 @@ def load_config(config_path=None):
         }
     }
     
-    if config_path and Path(config_path).exists():
-        with open(config_path) as f:
+    if config_path:
+        requested_path = config_path
+        resolved_path = config_path if config_path.is_absolute() else (Path.cwd() / config_path)
+        if not resolved_path.exists():
+            raise SystemExit(
+                f"Config file '{requested_path}' not found. Use '--config xc_configs/<name>.yaml'."
+            )
+        with open(resolved_path) as f:
             config = yaml.safe_load(f)
         # Merge with defaults
         for key in default_config:
@@ -111,7 +119,7 @@ def load_config(config_path=None):
 
 # Parse command line arguments to get config file
 parser = argparse.ArgumentParser(description="UMAP Visualization App")
-parser.add_argument("--config", type=str, help="Path to config.yaml file")
+parser.add_argument("--config", type=Path, help="Path to config.yaml file")
 args = parser.parse_args()
 
 # Load configuration

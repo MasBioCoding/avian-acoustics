@@ -1,43 +1,23 @@
 #!/usr/bin/env python3
 """
-Download bird recordings from Xeno-Canto for a specified species.
-Includes both foreground (main species) and background recordings.
-
-cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+Rebuild metadata for already downloaded Xeno-Canto recordings.
+This script recreates the metadata.csv file based on existing downloaded files,
+without re-downloading anything.
 
 Usage:
-    python download_species.py --species "Emberiza citrinella" --max-recordings 1000
-    python download_species.py --config config_limosa_limosa.yaml
-    python download_species.py --config config_emberiza_citrinella.yaml
-    python download_species.py --config config_sylvia_atricapilla.yaml
-    python download_species.py --config config_fringilla_coelebs.yaml
-    python download_species.py --config config_turdus_merula.yaml
-    python download_species.py --config config_parus_major.yaml
-    python download_species.py --config config_passer_montanus.yaml
-    python download_species.py --config config_passer_domesticus.yaml
-    python download_species.py --config config_strix_aluco.yaml
-    python download_species.py --config config_asio_otus.yaml
-    python download_species.py --config config_chloris_chloris.yaml
-    python download_species.py --config config_phylloscopus_collybita.yaml
-    python download_species.py --config config_phylloscopus_trochilus.yaml
-    python download_species.py --config config_acrocephalus_scirpaceus.yaml
-    python download_species.py --config config_curruca_communis.yaml
-    python download_species.py --config config_cettia_cetti.yaml
+    python xc_scripts/metadata_species.py --config xc_configs/config_emberiza_citrinella.yaml
+    python xc_scripts/metadata_species.py --species "Emberiza citrinella"
 """
 
-
 import argparse
-import json
-import time
 import csv
-import shutil
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Iterable
+from typing import Dict, List, Optional, Iterable, Set
 from dataclasses import dataclass, asdict
-from urllib.parse import quote_plus
 import requests
-from tqdm import tqdm
 import yaml
+from tqdm import tqdm
 
 
 @dataclass
@@ -85,7 +65,7 @@ class RecordingMetadata:
             country=rec.get("cnt", ""),
             location=rec.get("loc", ""),
             lat=float(rec.get("lat", 0)) if rec.get("lat") else 0,
-            lon=float(rec.get("lng", rec.get("lon", 0))) if rec.get("lng") or rec.get("lon") else 0,  # Try lng first, then lon
+            lon=float(rec.get("lng", rec.get("lon", 0))) if rec.get("lng") or rec.get("lon") else 0,
             alt=rec.get("alt", ""),
             recordist=rec.get("rec", ""),
             quality=rec.get("q", ""),
@@ -95,7 +75,7 @@ class RecordingMetadata:
             type=rec.get("type", ""),
             sex=rec.get("sex", ""),
             stage=rec.get("stage", ""),
-            also=also_field,  # Now always a string
+            also=also_field,
             remarks=rec.get("rmk", "")
         )
 
@@ -103,7 +83,7 @@ class RecordingMetadata:
 class XenoCantoCrawler:
     """Handle Xeno-Canto API interactions"""
     
-    def __init__(self, request_timeout: int = 15, request_pause: float = 0.5):
+    def __init__(self, request_timeout: int = 15, request_pause: float = 0.01):
         self.base_url = "https://xeno-canto.org/api/2/recordings"
         self.timeout = request_timeout
         self.pause = request_pause
@@ -120,9 +100,7 @@ class XenoCantoCrawler:
     
     def search_background(self, species: str, extra_query: Optional[str] = None) -> Iterable[Dict]:
         """Search for recordings where species appears in 'also' field"""
-        # Try different query formats for background recordings
-        # XC expects: also:"genus species" (with quotes for multi-word)
-        query_parts = [f'also:"{species}"']  # Use quotes around species name
+        query_parts = [f'also:"{species}"']
         if extra_query:
             query_parts.append(extra_query)
         query = " ".join(query_parts)
@@ -136,7 +114,6 @@ class XenoCantoCrawler:
         total_pages = None
         
         while True:
-            # URL encode the query properly (but + should remain +)
             encoded_query = requests.utils.quote(query, safe='+')
             url = f"{self.base_url}?query={encoded_query}&page={page}"
             
@@ -152,7 +129,6 @@ class XenoCantoCrawler:
             if not recordings:
                 break
             
-            # Update total pages on first request
             if total_pages is None:
                 total_pages = int(data.get("numPages", 1))
                 total_recs = int(data.get("numRecordings", 0))
@@ -167,8 +143,8 @@ class XenoCantoCrawler:
             time.sleep(self.pause)
 
 
-class SpeciesDownloader:
-    """Main downloader class"""
+class MetadataRebuilder:
+    """Rebuild metadata for existing downloads"""
     
     def __init__(self, config: Dict):
         self.config = config
@@ -179,95 +155,108 @@ class SpeciesDownloader:
         # Setup paths
         self.root = Path(config["paths"]["root"]).expanduser()
         self.download_dir = self.root / "xc_downloads" / self.slug
-        self.download_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not self.download_dir.exists():
+            raise ValueError(f"Download directory does not exist: {self.download_dir}")
         
         self.crawler = XenoCantoCrawler(
             request_timeout=config.get("xeno_canto", {}).get("timeout", 15),
             request_pause=config.get("xeno_canto", {}).get("pause", 0.5)
         )
     
-    def download(self):
-        """Main download process"""
-        max_recordings = self.config["xeno_canto"].get("max_recordings", 1000)
+    def rebuild_metadata(self):
+        """Main rebuild process"""
         include_background = self.config["xeno_canto"].get("include_background", True)
         extra_query = self.config["xeno_canto"].get("extra_query", None)
         
         print(f"\n{'='*60}")
-        print(f"Downloading recordings for: {self.species}")
+        print(f"Rebuilding metadata for: {self.species}")
         if self.common_name:
             print(f"Common name: {self.common_name}")
-        print(f"Output directory: {self.download_dir}")
-        print(f"Max recordings: {max_recordings}")
+        print(f"Directory: {self.download_dir}")
         print(f"Include background: {include_background}")
         if extra_query:
             print(f"Extra filters: {extra_query}")
         print(f"{'='*60}\n")
         
-        # Track what we've downloaded
+        # Get existing file IDs
         existing_ids = self._get_existing_ids()
+        print(f"Found {len(existing_ids)} existing recordings")
+        
+        if not existing_ids:
+            print("No existing recordings found!")
+            return
+        
+        # Collect metadata for existing files
         all_metadata = []
-        downloaded_count = 0
+        processed_ids = set()
         
-        # Download foreground recordings
-        print("Searching for foreground recordings...")
+        # Search foreground recordings
+        print("\nSearching for foreground recording metadata...")
         for rec in self.crawler.search_foreground(self.species, extra_query):
-            if downloaded_count >= max_recordings:
-                break
+            xcid = rec.get("id", "")
             
-            metadata = RecordingMetadata.from_xc_record(rec, self.species, is_background=False)
-            
-            if metadata.xcid in existing_ids:
-                all_metadata.append(metadata)  # Still track metadata
-                continue
-            
-            if self._download_file(metadata):
+            if xcid in existing_ids and xcid not in processed_ids:
+                metadata = RecordingMetadata.from_xc_record(rec, self.species, is_background=False)
                 all_metadata.append(metadata)
-                downloaded_count += 1
-                existing_ids.add(metadata.xcid)
+                processed_ids.add(xcid)
                 
-                if downloaded_count % 10 == 0:
-                    print(f"  Downloaded {downloaded_count}/{max_recordings} recordings...")
+                if len(processed_ids) % 50 == 0:
+                    print(f"  Processed {len(processed_ids)}/{len(existing_ids)} recordings...")
+            
+            # Stop if we've found all our files
+            if len(processed_ids) == len(existing_ids):
+                break
         
-        # Download background recordings if requested
-        if include_background and downloaded_count < max_recordings:
-            print(f"\nSearching for background recordings (where {self.species} is also heard)...")
+        # Search background recordings if needed
+        if include_background and len(processed_ids) < len(existing_ids):
+            print(f"\nSearching for background recording metadata...")
+            print(f"Still looking for {len(existing_ids) - len(processed_ids)} recordings...")
             
             for rec in self.crawler.search_background(self.species, extra_query):
-                if downloaded_count >= max_recordings:
-                    break
+                xcid = rec.get("id", "")
                 
-                # For background recordings, the main species is different
-                metadata = RecordingMetadata.from_xc_record(rec, self.species, is_background=True)
-                
-                # Skip if we already have this recording
-                if metadata.xcid in existing_ids:
-                    continue
-                
-                # Verify our species is actually in the 'also' field
-                also_text = metadata.also if isinstance(metadata.also, str) else str(metadata.also)
-                if not also_text or self.species.lower() not in also_text.lower():
-                    continue
-                
-                if self._download_file(metadata):
-                    all_metadata.append(metadata)
-                    downloaded_count += 1
-                    existing_ids.add(metadata.xcid)
+                if xcid in existing_ids and xcid not in processed_ids:
+                    metadata = RecordingMetadata.from_xc_record(rec, self.species, is_background=True)
                     
-                    if downloaded_count % 10 == 0:
-                        print(f"  Downloaded {downloaded_count}/{max_recordings} recordings...")
+                    # Verify our species is in the 'also' field
+                    also_text = metadata.also if isinstance(metadata.also, str) else str(metadata.also)
+                    if also_text and self.species.lower() in also_text.lower():
+                        all_metadata.append(metadata)
+                        processed_ids.add(xcid)
+                        
+                        if len(processed_ids) % 50 == 0:
+                            print(f"  Processed {len(processed_ids)}/{len(existing_ids)} recordings...")
+                
+                # Stop if we've found all our files
+                if len(processed_ids) == len(existing_ids):
+                    break
+        
+        # Check for missing metadata
+        missing_ids = existing_ids - processed_ids
+        if missing_ids:
+            print(f"\nWarning: Could not find metadata for {len(missing_ids)} recordings:")
+            for mid in sorted(missing_ids)[:10]:  # Show first 10
+                print(f"  - XC{mid}")
+            if len(missing_ids) > 10:
+                print(f"  ... and {len(missing_ids) - 10} more")
         
         # Save metadata
-        self._save_metadata(all_metadata)
-        
-        print(f"\n{'='*60}")
-        print(f"Download complete!")
-        print(f"Total recordings: {len(all_metadata)}")
-        print(f"Foreground: {sum(1 for m in all_metadata if not m.is_background)}")
-        print(f"Background: {sum(1 for m in all_metadata if m.is_background)}")
-        print(f"Metadata saved to: {self.download_dir / 'metadata.csv'}")
-        print(f"{'='*60}\n")
+        if all_metadata:
+            self._save_metadata(all_metadata)
+            
+            print(f"\n{'='*60}")
+            print(f"Metadata rebuild complete!")
+            print(f"Total recordings with metadata: {len(all_metadata)}")
+            print(f"Foreground: {sum(1 for m in all_metadata if not m.is_background)}")
+            print(f"Background: {sum(1 for m in all_metadata if m.is_background)}")
+            print(f"Missing metadata: {len(missing_ids)}")
+            print(f"Metadata saved to: {self.download_dir / 'metadata.csv'}")
+            print(f"{'='*60}\n")
+        else:
+            print("\nNo metadata found for existing recordings!")
     
-    def _get_existing_ids(self) -> set:
+    def _get_existing_ids(self) -> Set[str]:
         """Get IDs of already downloaded recordings"""
         existing = set()
         
@@ -282,42 +271,18 @@ class SpeciesDownloader:
         
         return existing
     
-    def _download_file(self, metadata: RecordingMetadata) -> bool:
-        """Download a single recording"""
-        try:
-            # Determine file extension
-            ext = Path(metadata.file_name).suffix if metadata.file_name else '.mp3'
-            if not ext:
-                ext = Path(metadata.file_url).suffix or '.mp3'
-            
-            # Create filename
-            filename = f"{self.slug}_{metadata.xcid}{ext}"
-            filepath = self.download_dir / filename
-            
-            # Skip if exists
-            if filepath.exists():
-                return True
-            
-            # Download with streaming
-            response = requests.get(metadata.file_url, stream=True, timeout=30)
-            response.raise_for_status()
-            
-            # Save to file
-            with open(filepath, 'wb') as f:
-                shutil.copyfileobj(response.raw, f)
-            
-            return True
-            
-        except Exception as e:
-            print(f"  Error downloading XC{metadata.xcid}: {e}")
-            return False
-    
     def _save_metadata(self, metadata_list: List[RecordingMetadata]):
         """Save metadata to CSV"""
         if not metadata_list:
             return
         
         csv_path = self.download_dir / "metadata.csv"
+        
+        # Backup existing metadata if it exists
+        if csv_path.exists():
+            backup_path = csv_path.with_suffix('.csv.bak')
+            print(f"Backing up existing metadata to: {backup_path}")
+            csv_path.rename(backup_path)
         
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
             # Convert dataclasses to dicts
@@ -358,8 +323,14 @@ def load_config(config_path: Optional[Path] = None) -> Dict:
         }
     }
     
-    if config_path and config_path.exists():
-        with open(config_path) as f:
+    if config_path:
+        requested_path = config_path
+        resolved_path = config_path if config_path.is_absolute() else (Path.cwd() / config_path)
+        if not resolved_path.exists():
+            raise SystemExit(
+                f"Config file '{requested_path}' not found. Use '--config xc_configs/<name>.yaml'."
+            )
+        with open(resolved_path) as f:
             config = yaml.safe_load(f)
         # Merge with defaults
         for key in default_config:
@@ -375,11 +346,10 @@ def load_config(config_path: Optional[Path] = None) -> Dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download bird recordings from Xeno-Canto")
+    parser = argparse.ArgumentParser(description="Rebuild metadata for existing Xeno-Canto recordings")
     parser.add_argument("--config", type=Path, help="Path to config.yaml file")
     parser.add_argument("--species", type=str, help="Scientific name (e.g., 'Emberiza citrinella')")
     parser.add_argument("--common-name", type=str, help="Common name (e.g., 'Yellowhammer')")
-    parser.add_argument("--max-recordings", type=int, help="Maximum recordings to download")
     parser.add_argument("--include-background", action="store_true", help="Include background recordings")
     parser.add_argument("--root", type=Path, help="Root directory for downloads")
     
@@ -394,16 +364,18 @@ def main():
         config["species"]["slug"] = args.species.lower().replace(" ", "_")
     if args.common_name:
         config["species"]["common_name"] = args.common_name
-    if args.max_recordings:
-        config["xeno_canto"]["max_recordings"] = args.max_recordings
     if args.include_background:
         config["xeno_canto"]["include_background"] = True
     if args.root:
         config["paths"]["root"] = str(args.root)
     
-    # Run downloader
-    downloader = SpeciesDownloader(config)
-    downloader.download()
+    # Run metadata rebuilder
+    try:
+        rebuilder = MetadataRebuilder(config)
+        rebuilder.rebuild_metadata()
+    except ValueError as e:
+        print(f"Error: {e}")
+        return 1
 
 
 if __name__ == "__main__":
