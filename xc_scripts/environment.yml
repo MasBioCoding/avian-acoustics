@@ -1,0 +1,37 @@
+name: birdnetcluster1
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn=1.6.*
+  - umap-learn
+  - hdbscan
+  - matplotlib
+  - pillow
+  - bokeh
+  - plotly
+  - librosa=0.10.*
+  - resampy
+  - pysoundfile
+  - ffmpeg
+  - libsndfile
+  - tensorflow=2.15.*
+  - keras=2.15.*
+  - keras-tuner
+  - requests
+  - pyyaml
+  - tqdm
+  - bottle
+  - jupyter
+  - ipykernel
+  - pip:
+      - birdnetlib
+      - gradio==5.32.1
+      - pywebview
+      - perch-hoplite
+      - ml-collections
+      - tflite-runtime
