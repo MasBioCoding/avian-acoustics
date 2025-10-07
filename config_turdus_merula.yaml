@@ -1,0 +1,48 @@
+# Configuration for bird species data pipeline
+
+species:
+  scientific_name: "Turdus merula"
+  common_name: "Common Blackbird"
+  slug: "turdus_merula"  # Used for folder names
+
+paths:
+  root: "/Volumes/Z Slim/zslim_birdcluster"
+  
+xeno_canto:
+  max_recordings: 40000
+  include_background: true  # Include recordings where species is in background
+  extra_query: "len:3-200"  # Additional XC filters (recording length 3-200 seconds)
+  timeout: 15
+  pause: 0.01  # Seconds between API calls (be polite!)
+
+processing:
+  max_clips_per_recording: 5  # Max clips to extract per recording
+  clip_duration_sec: 3.0
+  min_confidence: 0.20
+  merge_within_sec: 1.0  # Merge detections within this time window
+  delete_originals: true  # Delete original files after clipping
+
+birdnet:
+  version: "2.4"
+  threads: 8        # Good for M1 Max (10 cores total, leave some for system)
+  batch_size: 32    # Good for 32GB RAM
+  # Note: Can increase threads to 10-12 if you want max speed
+  # But 8 keeps system responsive for other tasks
+
+analysis:
+  # UMAP parameters
+  umap_n_neighbors: 10      # Number of neighbors (5-50, lower=local, higher=global structure)
+  umap_min_dist: 0.0        # Minimum distance between points (0.0-1.0, lower=tighter clusters)
+  umap_n_components: 2      # Number of dimensions for output (2 for 2D visualization)
+  
+  # KMeans clustering parameters  
+  kmeans_clusters: 4        # Number of clusters to create
+  kmeans_n_init: 10         # Number of times KMeans runs with different seeds
+  
+  # Visualization parameters
+  point_size: 7            # Size of points in scatter plots
+  point_alpha: 0.3          # Transparency of points (0.0-1.0)
+
+audio:
+  base_url: "http://localhost:8765"  # Base URL for audio server
+  port: 8765                          # Port for local audio server
