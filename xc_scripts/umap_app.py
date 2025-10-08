@@ -11,6 +11,7 @@ To run:
    cd "/Volumes/Z Slim/zslim_birdcluster/clips/corvus_corax"
    cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_montanus"
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_domesticus"
+    cd "/Volumes/Z Slim/zslim_birdcluster/clips/parus_major"
    python3 -m http.server 8765
 3. Run the Bokeh app:
     cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
