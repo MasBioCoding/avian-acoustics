@@ -2,7 +2,8 @@
 """
 Rebuild metadata for already downloaded Xeno-Canto recordings.
 This script recreates the metadata.csv file based on existing downloaded files,
-without re-downloading anything.
+without re-downloading anything. (not recommended to use this script right now, just rely on
+the original metadata.csv file that was created during download)
 
 Usage:
     python xc_scripts/metadata_species.py --config xc_configs/config_emberiza_citrinella.yaml
