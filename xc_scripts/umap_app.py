@@ -33,6 +33,7 @@ To run:
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_collybita.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_trochilus.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_acrocephalus_scirpaceus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_buteo_buteo.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config.yaml
     Or without config (uses defaults):
     bokeh serve --show xc_scripts/umap_app.py

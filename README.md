@@ -101,6 +101,38 @@ All commands below assume `conda activate birdnetcluster1` and `cd /Users/masjan
 
 Each script prints progress along with the locations it reads from and writes to; refer to the usage blocks embedded in the file headers for additional examples.
 
+## Using the Browser App
+
+Once the Bokeh server is running, the browser app loads a UMAP projection on the left and a map of Europe on the right, the EUMAP if you will. Both maps are backed by the same data source.
+
+### Plot navigation
+- The UMAP view groups recordings by embedding similarity; points that sit close together are acoustically similar.  
+- The map view plots the same recordings by latitude/longitude over a Europe basemap.  
+- Use the Bokeh toolbar to explore both plots: select the `Pan` tool (hand icon) to drag, and use your mouse scroll or trackpad pinch to zoom. The `Reset` tool returns to the full extent if you get lost.
+- It might be nice to have zoomed in and out a little in the UMAP, so that the sliders wont affect the zoom.
+
+### Audio playback
+- Click any visible point in either plot to populate the playlist panel. UMAP clicks gather neighbours within the embedding space, while map clicks gather recordings within roughly 15 km.  
+- Each playlist row includes a `Play` button that streams audio from the HTTP server you started earlier. Recordings filtered out of view are omitted from the playlist.  
+- Use the `Test audio server` button to confirm that the audio host is reachable - the status panel updates once the test clip loads (or fails).
+
+### Hover details and highlighting
+- Hovering over a point shows its metadata in a tooltip and simultaneously highlights the same recording on both plots, making it easy to cross-reference geographic and embedding context.
+
+### Filters and display widgets
+- **Date range sliders:** `Adjust date slider range (zoom timeline)` changes the bounds available to the main `Filter recordings between` slider. After narrowing the bounds, drag the main slider handles to keep only recordings within the desired date interval.  
+- **Color by:** The drop-down sets the active coloring scheme. Choosing `Season`, `KMeans`, `HDBSCAN`, `Sex`, or `Type` reveals the corresponding checkboxes; unchecking a value hides those recordings. Selecting `Time of Day` enables the slider described below. If colors are not loading, it helps to switch back and forth.
+- **Time range slider:** When coloring by time, use the 0-24 hour slider to keep dawn, night, or other parts of the day. Clips without a known time remain visible.  
+- **Show hover info toggle:** Disable this toggle if you want to reduce tooltip clutter; it hides hover popovers on both plots without affecting selections.
+
+### Analysis widgets
+- **UMAP params:** The `Nearest neighbors` and `Min distance` spinners control how the app recomputes the projection during zooms. See the [UMAP parameter guide](https://umap-learn.readthedocs.io/en/latest/parameters.html) for tuning advice.  
+- **HDBSCAN controls:** Adjust `Min cluster size` and `Min samples`, then click `Apply HDBSCAN` to label the currently visible projection. The resulting checkboxes let you hide specific clusters or noise. Refer to the [HDBSCAN parameter selection guide](https://hdbscan.readthedocs.io/en/latest/parameter_selection.html) when experimenting.
+
+### Zoom controls and known issue
+- `Zoom to Selection` recomputes the UMAP layout using only the currently selected (use box selection tool), visible points, while `Reset to Full Dataset` restores the original dataset.  
+- Zooming can occasionally trigger a bug that leaves most points invisible; this is a known issue slated for a future fix. If it happens, reset to the full dataset to recover.
+
 ## Additional Notes
 
 - Reruns are incremental: the downloader skips files it already has, and `process_species.py` uses `metadata.csv` to map clips back to their Xeno-Canto IDs. Still, as of now, I would suggest running scripts in one go, and not trust its incremental capabillities
