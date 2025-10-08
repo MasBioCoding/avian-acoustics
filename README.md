@@ -80,7 +80,7 @@ All commands below assume `conda activate birdnetcluster1` and `cd /Users/masjan
 
 3. **Detect, clip, and embed recordings**  
    ```bash
-   python xc_scripts/process_species.py --config xc_configs/config_turdus_merula.yaml --skip-confirm
+   python xc_scripts/process_species.py --config xc_configs/config_turdus_merula.yaml
    ```  
    This populates `clips/<slug>/` and `embeddings/<slug>/` inside your data root.
 
