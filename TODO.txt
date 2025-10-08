@@ -1,0 +1,30 @@
+Just a text file with some personal todo goals
+
+High priority:
+1. Create test framework for new users
+
+2. Add the rasp pi specific pipeline
+
+3. Add a subset of pi data for Emiel to play around with (needs script to generate)
+
+4. Fix the points disappearing bug
+
+5. Add normalisation to xeno canto data before emedding (probably also before clips)
+
+Medium priority:
+1. Optimize scripts to accept more custom directory structure from config files.
+mostly talking about cd at the start, should accept a root from config files.
+And should also check wether conflicts arise upon changing existing directory
+from config files (talking about what is now z slim)
+
+2. Add lines to UMAP and EUMAP to show which data correspond to listed audio-
+files in the playlist widget. Also add last 4 digits form xc_ID and the clip index
+
+3. Fix the structure of the github so that xc_pipeline is a subfolder
+
+low priority:
+
+Implement lasso select tool from bokeh documentation
+Implement freedraw
+implement alpha spinner
+implement size spinner
