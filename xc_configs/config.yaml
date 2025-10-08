@@ -6,10 +6,10 @@ species:
   slug: "turdus_merula"  # Used for folder names
 
 paths:
-  root: "/Volumes/Z Slim/zslim_birdcluster"
+  root: "/Volumes/Z Slim/zslim_birdcluster" # external drive recommended
   
 xeno_canto:
-  max_recordings: 5000
+  max_recordings: 1000
   include_background: true  # Include recordings where species is in background
   extra_query: "len:3-200"  # Additional XC filters (recording length 3-200 seconds)
   timeout: 15

@@ -1,37 +1,51 @@
+# use conda env create -f environment.yml to create a new environment
+# use conda env update -f environment.yml to update an existing environment (use from
+# within the environment). Add --prune to remove dependencies not listed in the yml. But note
+# pruning requires reinstalling BirdNET-Analyzer dependencies manually
+
+# After creating or updating this environment, install BirdNET-Analyzer itself with:
+#   cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+#   git clone https://github.com/birdnet-team/BirdNET-Analyzer.git
+#   pip install -e ./BirdNET-Analyzer --no-deps
+# The --no-deps flag keeps the pinned versions below intact.
+
+# Run test: python -m birdnet_analyzer.analyze /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input -o /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output
+# also test embeddings:
+# python -m birdnet_analyzer.embeddings -db /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output -i /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input
+# Can delete after succesful test
+
 name: birdnetcluster1
 channels:
   - conda-forge
 dependencies:
   - python=3.11
   - pip
-  - numpy
-  - scipy
-  - pandas
-  - scikit-learn=1.6.*
-  - umap-learn
-  - hdbscan
-  - matplotlib
-  - pillow
-  - bokeh
-  - plotly
-  - librosa=0.10.*
-  - resampy
+  - numpy=1.26.*
+  - scipy=1.11.*
+  - pandas=2.2.*
+  - scikit-learn=1.4.*
+  - umap-learn=0.5.6
+  - hdbscan=0.8.39
+  - matplotlib-base=3.8.*
+  - pillow=10.4.*
+  - bokeh=3.4.*
+  - plotly=5.24.*
+  - librosa=0.10.2
+  - resampy=0.4.3
   - pysoundfile
+  - soxr
   - ffmpeg
   - libsndfile
-  - tensorflow=2.15.*
-  - keras=2.15.*
-  - keras-tuner
   - requests
   - pyyaml
   - tqdm
-  - bottle
-  - jupyter
-  - ipykernel
+  - importlib-metadata
+  - numba
   - pip:
-      - birdnetlib
-      - gradio==5.32.1
-      - pywebview
-      - perch-hoplite
-      - ml-collections
-      - tflite-runtime
+      - tensorflow-macos==2.15.0
+      - tensorflow-metal==1.1.0
+      - keras==2.15.0
+      - keras-tuner==1.4.7
+      - ml-collections==0.1.1
+      - birdnetlib==0.18.0
+      - perch-hoplite==0.1.0

@@ -6,34 +6,36 @@ Bokeh Server Application - COMPLETE VERSION
 To run:
 1. Save this file as 'xc_scripts/umap_app.py'
 2. Start audio server in separate terminal:
-   cd "/Volumes/Z Slim/zslim_birdcluster/clips/sylvia_atricapilla"
-   cd "/Volumes/Z Slim/zslim_birdcluster/clips/turdus_merula"
-   cd "/Volumes/Z Slim/zslim_birdcluster/clips/corvus_corax"
-   cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_montanus"
+    cd "/Volumes/Z Slim/zslim_birdcluster/clips/sylvia_atricapilla"
+    cd "/Volumes/Z Slim/zslim_birdcluster/clips/turdus_merula"
+    cd "/Volumes/Z Slim/zslim_birdcluster/clips/corvus_corax"
+    cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_montanus"
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_domesticus"
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/parus_major"
-   python3 -m http.server 8765
+    cd "/Volumes/Z Slim/zslim_birdcluster/clips/buteo_buteo"
+    python3 -m http.server 8765
 3. Run the Bokeh app:
     cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_limosa_limosa.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_emberiza_citrinella.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_fringilla_coelebs.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_sylvia_atricapilla.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_turdus_merula.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_parus_major.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_corvus_corax.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_montanus.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_domesticus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_limosa_limosa.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_emberiza_citrinella.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_fringilla_coelebs.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_sylvia_atricapilla.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_turdus_merula.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_parus_major.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_corvus_corax.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_montanus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_domesticus.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_chloris_chloris.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_strix_aluco.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_asio_otus.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_curruca_communis.yaml
-   bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_cettia_cetti.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_curruca_communis.yaml
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_cettia_cetti.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_collybita.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_trochilus.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_acrocephalus_scirpaceus.yaml
-   Or without config (uses defaults):
-   bokeh serve --show xc_scripts/umap_app.py
+    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config.yaml
+    Or without config (uses defaults):
+    bokeh serve --show xc_scripts/umap_app.py
 """
 
 import argparse

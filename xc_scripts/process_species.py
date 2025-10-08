@@ -21,6 +21,7 @@ Usage:
     python xc_scripts/process_species.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
     python xc_scripts/process_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/process_species.py --config xc_configs/config_cettia_cetti.yaml
+    python xc_scripts/process_species.py --config xc_configs/config.yaml
 
 """
 
