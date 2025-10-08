@@ -45,9 +45,9 @@ Configuration lives in `xc_pipeline/xc_configs/`. Start from `config.yaml` or on
 
 - `species`: scientific/common names plus an optional `slug` used for folder names.
 - `paths.root`: absolute path where downloads, clips, and embeddings are stored.
-- `xeno_canto`: API parameters such as `max_recordings`, `include_background`, and extra query filters (e.g., `len:3-200`).
+- `xeno_canto`: API parameters such as `max_recordings`, `include_background`, and extra query filters (e.g., `len:3-200`). Max recordings can exceed available recordings without issue. In my experience 5k raw files, assuming maxlen 180, will be around ... 20GB, and subsequent clips, assuming max 5 per rec, will be around 4GB
 - `processing`: clip duration, confidence thresholds, and whether to delete originals after clipping.
-- `birdnet`: CLI thread/batch sizing for your hardware.
+- `birdnet`: CLI thread/batch sizing for your hardware. For a 10 core M1MAX apple sillicon I use 8 cores for maximum speed, 4-5 cores if I want to do other tasks during processing. thread size i keep 32, have not played around with it.
 - `analysis`: UMAP and clustering defaults consumed by the visualization.
 - `audio`: host/port for the HTTP server that makes clips playable inside the Bokeh app.
 

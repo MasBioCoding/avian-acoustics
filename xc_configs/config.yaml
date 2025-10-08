@@ -1,9 +1,9 @@
 # Configuration for bird species data pipeline
 
 species:
-  scientific_name: "Asio otus"
-  common_name: "Long-eared Owl"
-  slug: "asio_otus"  # Used for folder names
+  scientific_name: "Turdus merula"
+  common_name: "Common Blackbird"
+  slug: "turdus_merula"  # Used for folder names
 
 paths:
   root: "/Volumes/Z Slim/zslim_birdcluster"
@@ -32,7 +32,7 @@ birdnet:
 analysis:
   # UMAP parameters
   umap_n_neighbors: 20      # Number of neighbors (5-50, lower=local, higher=global structure)
-  umap_min_dist: 0.03        # Minimum distance between points (0.0-1.0, lower=tighter clusters)
+  umap_min_dist: 0.001        # Minimum distance between points (0.0-1.0, lower=tighter clusters)
   umap_n_components: 2      # Number of dimensions for output (2 for 2D visualization)
   
   # KMeans clustering parameters  
