@@ -63,6 +63,10 @@ Configuration lives in `xc_pipeline/xc_configs/`. Start from `config.yaml` or on
 
 Store custom configs alongside the templates and reference them with the `--config` flag when running scripts.
 
+## Xeno Canto
+I suggest this page to gain insight into the available recordings and the name usage of Xeno Canto.
+https://xeno-canto.org/collection/species/all?area=europe
+
 ## Running the Pipeline
 
 All commands below assume `conda activate birdnetcluster1` and `cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline`.
