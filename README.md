@@ -14,30 +14,40 @@ xc_pipeline/
 birdnet_pi/                # Pi-specific tooling (out of scope here)
 ```
 
-The pipeline expects a writable data root (see `paths.root` in the configs) and will create three folders beneath it: `xc_downloads/`, `clips/`, and `embeddings/`. An external drive is recommended because audio files are numerous
+The pipeline expects a writable data root (see `paths.root` in the configs) and will create three folders beneath it: `xc_downloads/`, `clips/`, and `embeddings/`. An external drive is recommended because audio files are numerous.
 
 ## Managing the Conda Environment
 
 `xc_pipeline/environment.yml` is the canonical specification for the end-to-end workflow. It pins Python 3.11 together with TensorFlow, librosa, UMAP, Bokeh, HDBSCAN, and command-line helpers such as `tqdm`. Always create or update your environment from this file to guarantee package compatibility with the scripts:
 
 ```bash
-cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline # replace with path to your wd
 conda env create -f environment.yml
+# or for updating use
+conda env update -f environment.yml
+# but note pruning (--prune) requires reinstalling BirdNET-Analyzer dependencies manually
 conda activate birdnetcluster1
 ```
 
-If the environment already exists, replace the first command with `conda env update -f environment.yml --prune`. The optional `conda_packages_ext.txt` can be used to track personal additions; keep the shared `environment.yml` authoritative.
+If the environment already exists, replace the first command with `conda env update -f environment.yml --prune` but note pruning requires reinstalling BirdNET-Analyzer build, use `pip install -e ./BirdNET-Analyzer --no-deps`. The optional `conda_packages_ext.txt` can be used to track personal additions; keep the shared `environment.yml` authoritative.
 
 ## Installing BirdNET-Analyzer
 
-The processing script shells out to the BirdNET CLI (`birdnet_analyzer.analyze` and `birdnet_analyzer.embeddings`). Install the bundled copy in editable mode **after** activating the Conda environment:
+https://birdnet-team.github.io/BirdNET-Analyzer/installation.html
+The processing script shells out to the BirdNET CLI (`birdnet_analyzer.analyze` and `birdnet_analyzer.embeddings`). Install the bundled copy in editable mode **after** activating the Conda environment: 
 
 ```bash
 cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
-git clone https://github.com/kahst/BirdNET-Analyzer.git
+git clone https://github.com/birdnet-team/BirdNET-Analyzer.git
+pip install -e ./BirdNET-Analyzer --no-deps
 ```
 
-This exposes the `birdnet_analyzer` module to the Python interpreter used by the pipeline. Verify the installation with `python -m birdnet_analyzer.analyze --help`.
+This exposes the `birdnet_analyzer` module to the Python interpreter used by the pipeline. Verify the installation with `python -m birdnet_analyzer.analyze --help`. Make sure to cd back to wd (xc_pipeline as of now)
+Further tests: 
+python -m birdnet_analyzer.analyze /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input -o /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output
+also test embeddings:
+python -m birdnet_analyzer.embeddings -db /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output -i /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input
+Can delete output after succesful test
 
 ## Working with Config Files
 
@@ -59,24 +69,24 @@ All commands below assume `conda activate birdnetcluster1` and `cd /Users/masjan
 
 1. **Download Xeno-Canto audio**  
    ```bash
-   python xc_scripts/download_species.py --config xc_configs/config_emberiza_citrinella.yaml
+   python xc_scripts/download_species.py --config xc_configs/config_turdus_merula.yaml
    ```  
    Replace the config to target another species, or use `--species "Genus species"` for ad-hoc runs.
 
 2. **Regenerate metadata (optional, for existing downloads)**  
    ```bash
-   python xc_scripts/metadata_species.py --config xc_configs/config_emberiza_citrinella.yaml
+   python xc_scripts/metadata_species.py --config xc_configs/config_turdus_merula.yaml
    ```
 
 3. **Detect, clip, and embed recordings**  
    ```bash
-   python xc_scripts/process_species.py --config xc_configs/config_emberiza_citrinella.yaml --skip-confirm
+   python xc_scripts/process_species.py --config xc_configs/config_turdus_merula.yaml --skip-confirm
    ```  
    This populates `clips/<slug>/` and `embeddings/<slug>/` inside your data root.
 
 4. **Serve audio locally for the visualization**  
    ```bash
-   cd "<paths.root>/clips/emberiza_citrinella"
+   cd "<paths.root>/clips/turdus_merula"
    python -m http.server 8765
    ```  
    Keep this terminal running; the UMAP app streams audio from `http://localhost:8765`.
