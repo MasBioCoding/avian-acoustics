@@ -28,6 +28,7 @@ logs/
 checkpoints/
 
 # BirdNET model downloads
+BirdNET-Analyzer/
 models/
 birdnet_models/
 
