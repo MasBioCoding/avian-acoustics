@@ -1,27 +1,35 @@
-# Xeno-Canto Pipeline
+# BirdNET cluster Data Pipeline
 
-This repository collects tooling for building clustered embeddings of bird vocalizations. At present this README focuses on the Xeno-Canto ingestion and analysis workflow housed in `xc_pipeline/`.
+This repository collects tooling for building clustered embeddings of bird vocalizations. It now bundles both the Xeno-Canto ingestion workflow and Raspberry Pi processing utilities in a single tree.
 
 ## Repository Layout
 
 ```
-xc_pipeline/
+birdnet_data_pipeline/
 ├── environment.yml          # Conda specification for the pipeline runtime
 ├── conda_packages_ext.txt   # Optional personal package additions
+├── README.md                # You are here
+├── birdnet_pi/              # Raspberry Pi specific helpers
+│   ├── process_species_pi.py
+│   ├── umap_app_pi.py
+│   ├── detections.csv       # BirdNET Pi detection metadata
+│   └── pi_clips_embeds/     # Local Pi embeddings & clips (gitignored, user-supplied). Other paths possible.
 ├── xc_configs/              # Species-specific configuration templates
 ├── xc_scripts/              # Download, process, and visualization scripts
+├── testbirdnet/             # Sample inputs/outputs for quick checks
 └── BirdNET-Analyzer/        # BirdNET CLI source (installed inside the env)
-birdnet_pi/                # Pi-specific tooling (out of scope here)
 ```
+
+> `birdnet_pi/pi_clips_embeds/` remains empty in version control; populate it with the assets I distribute separately.
 
 The pipeline expects a writable data root (see `paths.root` in the configs) and will create three folders beneath it: `xc_downloads/`, `clips/`, and `embeddings/`. An external drive is recommended because audio files are numerous.
 
 ## Managing the Conda Environment
 
-`xc_pipeline/environment.yml` is the canonical specification for the end-to-end workflow. It pins Python 3.11 together with TensorFlow, librosa, UMAP, Bokeh, HDBSCAN, and command-line helpers such as `tqdm`. Always create or update your environment from this file to guarantee package compatibility with the scripts:
+`environment.yml` at the repository root is the canonical specification for the end-to-end workflow. It pins Python 3.11 together with TensorFlow, librosa, UMAP, Bokeh, HDBSCAN, and command-line helpers such as `tqdm`. Always create or update your environment from this file to guarantee package compatibility with the scripts:
 
 ```bash
-cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline # replace with path to your wd
+cd /path/to/birdnet_data_pipeline  # replace with your checkout path
 conda env create -f environment.yml
 # or for updating use
 conda env update -f environment.yml
@@ -29,7 +37,7 @@ conda env update -f environment.yml
 conda activate birdnetcluster1
 ```
 
-If the environment already exists, replace the first command with `conda env update -f environment.yml --prune` but note pruning requires reinstalling BirdNET-Analyzer build, use `pip install -e ./BirdNET-Analyzer --no-deps`. The optional `conda_packages_ext.txt` can be used to track personal additions; keep the shared `environment.yml` authoritative.
+If the environment already exists, replace the first command with `conda env update -f environment.yml --prune`. Pruning removes unlisted packages, so reinstall BirdNET-Analyzer afterwards with `pip install -e ./BirdNET-Analyzer --no-deps`. The optional `conda_packages_ext.txt` can be used to track personal additions; keep the shared `environment.yml` authoritative.
 
 ## Installing BirdNET-Analyzer
 
@@ -37,21 +45,23 @@ https://birdnet-team.github.io/BirdNET-Analyzer/installation.html
 The processing script shells out to the BirdNET CLI (`birdnet_analyzer.analyze` and `birdnet_analyzer.embeddings`). Install the bundled copy in editable mode **after** activating the Conda environment: 
 
 ```bash
-cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+cd /path/to/birdnet_data_pipeline
 git clone https://github.com/birdnet-team/BirdNET-Analyzer.git
 pip install -e ./BirdNET-Analyzer --no-deps
 ```
 
-This exposes the `birdnet_analyzer` module to the Python interpreter used by the pipeline. Verify the installation with `python -m birdnet_analyzer.analyze --help`. Make sure to cd back to wd (xc_pipeline as of now)
-Further tests: 
-python -m birdnet_analyzer.analyze /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input -o /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output
-also test embeddings:
-python -m birdnet_analyzer.embeddings -db /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output -i /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input
-Can delete output after succesful test
+This exposes the `birdnet_analyzer` module to the Python interpreter used by the pipeline. Verify the installation with `python -m birdnet_analyzer.analyze --help`. Quick sanity checks:
+
+```bash
+python -m birdnet_analyzer.analyze testbirdnet/input -o testbirdnet/output
+python -m birdnet_analyzer.embeddings -db testbirdnet/output -i testbirdnet/input
+```
+
+Delete the temporary outputs after successful runs.
 
 ## Working with Config Files
 
-Configuration lives in `xc_pipeline/xc_configs/`. Start from `config.yaml` or one of the species-specific examples and adjust the blocks below:
+Configuration lives in `xc_configs/`. Start from `config.yaml` or one of the species-specific examples and adjust the blocks below:
 
 - `species`: scientific/common names plus an optional `slug` used for folder names.
 - `paths.root`: absolute path where downloads, clips, and embeddings are stored.
@@ -69,7 +79,7 @@ https://xeno-canto.org/collection/species/all?area=europe
 
 ## Running the Pipeline
 
-All commands below assume `conda activate birdnetcluster1` and `cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline`.
+All commands below assume `conda activate birdnetcluster1` and that you're inside the repository root.
 
 1. **Download Xeno-Canto audio**  
    ```bash
@@ -98,7 +108,7 @@ All commands below assume `conda activate birdnetcluster1` and `cd /Users/masjan
 
 5. **Launch the interactive UMAP explorer**  
    ```bash
-   cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+   cd /path/to/birdnet_data_pipeline
    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_emberiza_citrinella.yaml
    ```  
    The script accepts the same `--config` files used earlier and falls back to built-in defaults if none are provided.
@@ -136,6 +146,28 @@ Once the Bokeh server is running, the browser app loads a UMAP projection on the
 ### Zoom controls and known issue
 - `Zoom to Selection` recomputes the UMAP layout using only the currently selected (use box selection tool), visible points, while `Reset to Full Dataset` restores the original dataset.  
 - Zooming can occasionally trigger a bug that leaves most points invisible; this is a known issue slated for a future fix. If it happens, reset to the full dataset to recover.
+
+## Raspberry Pi Workflow
+
+The `birdnet_pi` directory mirrors the Xeno-Canto tooling but targets BirdNET exports generated on a Raspberry Pi.
+
+1. **Process Pi detections into clips and embeddings**  
+   ```bash
+   python birdnet_pi/process_species_pi.py --species "Merel" --root /path/to/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+   ```  
+   By default the script writes to `birdnet_pi/pi_clips_embeds/<species_slug>/`. Pass `--output /alternate/path` to direct results elsewhere; the script adds the species slug automatically if you supply the parent directory.
+
+2. **Serve Pi clips for the visualization**  
+   ```bash
+   cd birdnet_pi/pi_clips_embeds/merel/clips/merel # Or wherever youve stored them
+   python3 -m http.server 8765
+   ```
+
+3. **Launch the Pi UMAP viewer**  
+   ```bash
+   bokeh serve --show birdnet_pi/umap_app_pi.py --args --species "Merel"
+   ```  
+   Use `--output` if the embeddings reside outside the repository structure.
 
 ## Additional Notes
 
