@@ -3,6 +3,9 @@
 Process downloaded bird recordings: detect, clip, and generate embeddings.
 Uses BirdNET-Analyzer CLI for efficient batch processing.
 
+cd /path/to/birdnet_data_pipeline
+for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
+
 Usage:
     python xc_scripts/process_species.py --config xc_configs/config_limosa_limosa.yaml
     python xc_scripts/process_species.py --config xc_configs/config_emberiza_citrinella.yaml
