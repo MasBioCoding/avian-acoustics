@@ -6,6 +6,8 @@ Bokeh Server Application - COMPLETE VERSION
 To run:
 1. Save this file as 'xc_scripts/umap_app.py'
 2. Start audio server in separate terminal:
+    cd "/path/to/clips/<species_slug>"
+    for me:
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/sylvia_atricapilla"
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/turdus_merula"
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/corvus_corax"
@@ -15,7 +17,8 @@ To run:
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/buteo_buteo"
     python3 -m http.server 8765
 3. Run the Bokeh app:
-    cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+    cd /path/to/birdnet_data_pipeline
+    for me: cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_limosa_limosa.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_emberiza_citrinella.yaml
     bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_fringilla_coelebs.yaml

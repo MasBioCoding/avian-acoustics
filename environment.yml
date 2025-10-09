@@ -1,18 +1,20 @@
 # use conda env create -f environment.yml to create a new environment
 # use conda env update -f environment.yml to update an existing environment (use from
-# within the environment). Add --prune to remove dependencies not listed in the yml. But note
-# pruning requires reinstalling BirdNET-Analyzer dependencies manually
+#   within the environment). Add --prune to remove dependencies not listed in the yml. But note
+#   pruning requires reinstalling BirdNET-Analyzer dependencies manually
 
 # After creating or updating this environment, install BirdNET-Analyzer itself with:
-#   cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+#   cd /path/to/birdnet_data_pipeline
+#   for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 #   git clone https://github.com/birdnet-team/BirdNET-Analyzer.git
 #   pip install -e ./BirdNET-Analyzer --no-deps
-# The --no-deps flag keeps the pinned versions below intact.
+#   The --no-deps flag keeps the pinned versions below intact.
 
-# Run test: python -m birdnet_analyzer.analyze /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input -o /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output
+# Run test:
+#   python -m birdnet_analyzer.analyze testbirdnet/input -o testbirdnet/output
 # also test embeddings:
-# python -m birdnet_analyzer.embeddings -db /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/output -i /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline/testbirdnet/input
-# Can delete after succesful test
+#   python -m birdnet_analyzer.embeddings -db testbirdnet/output -i testbirdnet/input
+#   Can delete after succesful test
 
 name: birdnetcluster1
 channels:

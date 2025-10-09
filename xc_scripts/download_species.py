@@ -3,7 +3,8 @@
 Download bird recordings from Xeno-Canto for a specified species.
 Includes both foreground (main species) and background recordings.
 
-cd /Users/masjansma/Desktop/birdnetcluster1folder/xc_pipeline
+cd /path/to/birdnet_data_pipeline
+for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 
 Usage:
     python xc_scripts/download_species.py --species "Emberiza citrinella" --max-recordings 1000

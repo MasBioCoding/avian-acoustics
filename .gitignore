@@ -32,7 +32,10 @@ BirdNET-Analyzer/
 models/
 birdnet_models/
 
+# Pi-specific local data
+birdnet_pi/pi_clips_embeds/*
+!birdnet_pi/pi_clips_embeds/.gitkeep
+
 # Temporary files
 *.tmp
 *.log
-
