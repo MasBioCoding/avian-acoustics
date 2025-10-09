@@ -10,11 +10,10 @@ Change this first step to cd the appropriate location and species.
 2. Launch the interactive UMAP viewer:
    bokeh serve --show birdnet_pi/umap_app_pi.py --args --species "Bonte_Kraai"
 
-for the command in step 2: Use the optional `--output` flag if your Pi data lives outside
-`birdnet_pi/pi_clips_embeds/<species_slug>`.
-e.g. bokeh serve --show birdnet_pi/umap_app_pi.py --args --species "Bonte_Kraai" --output /Users/masjansma/Desktop/pi_clips_embeds
-
---output /Users/masjansma/Desktop/pi_clips_embeds/bonte_kraai
+    for the command in step 2: Use the optional `--output` flag if your Pi data lives outside
+    `birdnet_pi/pi_clips_embeds/<species_slug>`.
+    e.g.:
+    bokeh serve --show birdnet_pi/umap_app_pi.py --args --species "Bonte_Kraai" --output /Users/masjansma/Desktop/pi_clips_embeds
 """
 
 import argparse
