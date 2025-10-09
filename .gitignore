@@ -35,6 +35,7 @@ birdnet_models/
 # Pi-specific local data
 birdnet_pi/pi_clips_embeds/*
 !birdnet_pi/pi_clips_embeds/.gitkeep
+birdnet_pi/detections.csv
 
 # Temporary files
 *.tmp
