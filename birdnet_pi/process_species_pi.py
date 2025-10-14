@@ -6,6 +6,7 @@ Designed for Raspberry Pi exports organised by date and species folders.
 Typical usage (from repository root):
     python birdnet_pi/process_species_pi.py --species "Merel" --root /path/to/birdnet_all_recordings --metadata birdnet_pi/detections.csv
     for me:
+    cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
     python birdnet_pi/process_species_pi.py --species "Bonte_Kraai" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
     python birdnet_pi/process_species_pi.py --species "Bonte_Kraai" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv --output /Users/masjansma/Desktop/pi_clips_embeds
     
@@ -17,6 +18,23 @@ Typical usage (from repository root):
     when running one should see: 'Found 778 MP3 files for Bonte_Kraai
     Loading metadata from birdnet_pi/detections.csv
     Loaded 134031 metadata entries'. # If no metadata is seen here, no good.
+"""
+
+"""
+commands:
+    python birdnet_pi/process_species_pi.py --species "Koolmees" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Pimpelmees" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Merel" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Boomkruiper" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Zwarte_Kraai" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Bonte_Kraai" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Kauw" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Ekster" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Houtduif" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Nijlgans" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Brandgans" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Meerkoet" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
+    python birdnet_pi/process_species_pi.py --species "Zilvermeeuw" --root /Users/masjansma/birdnet_all_recordings --metadata birdnet_pi/detections.csv
 """
 
 import argparse
@@ -88,7 +106,7 @@ class SpeciesFolderProcessor:
         if config is None:
             config = {}
         self.clip_duration = config.get("clip_duration_sec", 3.0)
-        self.threads = config.get("threads", 8)
+        self.threads = config.get("threads", 6)
         self.batch_size = config.get("batch_size", 32)
         self.delete_originals = config.get("delete_originals", False)
         
@@ -389,7 +407,7 @@ def main():
                        help="Path to detections CSV file with metadata")
     parser.add_argument("--clip-duration", type=float, default=3.0,
                        help="Clip duration in seconds")
-    parser.add_argument("--threads", type=int, default=8,
+    parser.add_argument("--threads", type=int, default=6,
                        help="Number of threads for processing")
     parser.add_argument("--batch-size", type=int, default=32,
                        help="Batch size for BirdNET embeddings")

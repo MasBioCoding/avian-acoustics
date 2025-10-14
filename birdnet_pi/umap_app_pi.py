@@ -16,6 +16,16 @@ Change this first step to cd the appropriate location and species.
     bokeh serve --show birdnet_pi/umap_app_pi.py --args --species "Bonte_Kraai" --output /Users/masjansma/Desktop/pi_clips_embeds
 """
 
+"""
+Commands:
+    cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline/birdnet_pi/pi_clips_embeds/koolmees/clips/koolmees
+    python3 -m http.server 8765
+
+   bokeh serve --show birdnet_pi/umap_app_pi.py --args --species "Koolmees"
+
+
+"""
+
 import argparse
 import sys
 import yaml

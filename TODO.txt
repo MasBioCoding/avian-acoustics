@@ -2,28 +2,18 @@ Just a text file with some personal todo goals
 
 High priority:
 
-- Add the rasp pi specific pipeline
-
-- Add a subset of pi data for Emiel to play around with (needs script to generate)
-
 - Fix the points disappearing bug
 
-- Add normalisation to xeno canto data before emedding (probably also before clips)
-
 Medium priority:
-- Optimize scripts to accept more custom directory structure from config files.
-mostly talking about cd at the start, should accept a root from config files.
-And should also check wether conflicts arise upon changing existing directory
-from config files (talking about what is now z slim)
 
 - Add lines to UMAP and EUMAP to show which data correspond to listed audio-
 files in the playlist widget. Also add last 4 digits form xc_ID and the clip index
 
-- Fix the structure of the github so that xc_pipeline is a subfolder
-
 low priority:
 
 -Implement lasso select tool from bokeh documentation
+- Add a widget allowing color by selection, offering selection of either geo or umap groups and color by it.
+- Add color by region, according to EUring. Color by summer range, winter range.
 -Implement freedraw
 -implement alpha spinner
 -implement size spinner
