@@ -178,9 +178,175 @@ class AppState:
             'n_neighbors': ANALYSIS_PARAMS.get('umap_n_neighbors', 10),
             'min_dist': ANALYSIS_PARAMS.get('umap_min_dist', 0.0)
         }
-        
+
 state = AppState()
 print("AppState initialized")
+
+
+class FilterManager:
+    """Centralises all visibility filtering for the application."""
+
+    def __init__(
+        self,
+        source: ColumnDataSource,
+        filters: list[BooleanFilter],
+        stats_callback,
+        base_alpha: float,
+    ) -> None:
+        self.source = source
+        self.filters = filters
+        self.stats_callback = stats_callback
+        self.base_alpha = base_alpha
+        self.current_alpha = base_alpha
+        self.dataframe = pd.DataFrame()
+        self.available: dict[str, set[str] | None] = {}
+        self.selected: dict[str, set[str] | None] = {}
+        self.time_range: tuple[float, float] = (0.0, 24.0)
+        self.full_time_range: tuple[float, float] = (0.0, 24.0)
+        self.date_range: tuple[pd.Timestamp | None, pd.Timestamp | None] = (None, None)
+        self.full_date_range: tuple[pd.Timestamp | None, pd.Timestamp | None] = (None, None)
+        self.current_mask: np.ndarray = np.array([], dtype=bool)
+
+    # ------------------------------------------------------------------
+    # Dataset management
+    # ------------------------------------------------------------------
+    def update_dataset(self, df: pd.DataFrame) -> None:
+        """Replace the managed dataset and reset all filters."""
+
+        self.dataframe = df.reset_index(drop=True)
+        n_points = len(self.dataframe)
+        mask = np.ones(n_points, dtype=bool)
+        self.current_mask = mask
+
+        # Ensure the backing filters know about the new length
+        booleans = mask.tolist()
+        for flt in self.filters:
+            flt.booleans = booleans
+
+        # Determine available categories for each filter dimension
+        self.available = {
+            'season': set(self.dataframe['season'].dropna().astype(str)) if 'season' in self.dataframe else None,
+            'cluster': set(self.dataframe['kmeans3_str'].dropna().astype(str)) if 'kmeans3_str' in self.dataframe else None,
+            'hdbscan': set(self.dataframe['hdbscan_str'].dropna().astype(str)) if 'hdbscan_str' in self.dataframe else None,
+            'sex': set(self.dataframe['sex'].dropna().astype(str)) if 'sex' in self.dataframe else None,
+            'type': set(self.dataframe['type'].dropna().astype(str)) if 'type' in self.dataframe else None,
+        }
+
+        self.selected = {
+            key: (set(values) if values is not None else None)
+            for key, values in self.available.items()
+        }
+
+        # Reset time and date ranges
+        time_values = pd.to_numeric(self.dataframe.get('time_hour', pd.Series([], dtype=float)), errors='coerce')
+        if len(time_values) and np.isfinite(time_values).any():
+            valid_times = time_values[np.isfinite(time_values)]
+            self.full_time_range = (float(valid_times.min()), float(valid_times.max()))
+        else:
+            self.full_time_range = (0.0, 24.0)
+        self.time_range = self.full_time_range
+
+        ts_values = pd.to_numeric(self.dataframe.get('ts', pd.Series([], dtype=float)), errors='coerce')
+        valid_ts = ts_values[np.isfinite(ts_values)]
+        if len(valid_ts):
+            start = pd.to_datetime(valid_ts.min(), unit='ms')
+            end = pd.to_datetime(valid_ts.max(), unit='ms')
+            self.full_date_range = (start, end)
+        else:
+            self.full_date_range = (None, None)
+        self.date_range = self.full_date_range
+
+        self._update_alpha(mask)
+
+    # ------------------------------------------------------------------
+    # Filter state updates
+    # ------------------------------------------------------------------
+    def set_allowed(self, key: str, allowed: set[str]) -> None:
+        if self.available.get(key) is None:
+            return
+        self.selected[key] = set(allowed)
+        self.apply()
+
+    def set_time_range(self, start: float, end: float) -> None:
+        self.time_range = (start, end)
+        self.apply()
+
+    def set_date_range(self, start: pd.Timestamp | None, end: pd.Timestamp | None) -> None:
+        self.date_range = (start, end)
+        self.apply()
+
+    def set_alpha(self, alpha: float) -> None:
+        self.current_alpha = alpha
+        self.apply(update_mask=False)
+
+    def clear_hdbscan(self) -> None:
+        self.available['hdbscan'] = None
+        self.selected['hdbscan'] = None
+        self.apply()
+
+    def update_hdbscan(self, labels: list[str]) -> None:
+        values = set(labels)
+        self.available['hdbscan'] = values
+        self.selected['hdbscan'] = set(values)
+        self.apply()
+
+    # ------------------------------------------------------------------
+    # Core filtering
+    # ------------------------------------------------------------------
+    def apply(self, update_mask: bool = True) -> None:
+        if self.dataframe.empty:
+            return
+
+        if update_mask:
+            mask = np.ones(len(self.dataframe), dtype=bool)
+
+            for key, column in (
+                ('season', 'season'),
+                ('cluster', 'kmeans3_str'),
+                ('hdbscan', 'hdbscan_str'),
+                ('sex', 'sex'),
+                ('type', 'type'),
+            ):
+                allowed = self.selected.get(key)
+                available = self.available.get(key)
+                if available is not None and allowed is not None:
+                    mask &= self.dataframe[column].astype(str).isin(allowed)
+
+            # Time filter (allow invalid values represented by negatives)
+            time_values = pd.to_numeric(self.dataframe.get('time_hour'), errors='coerce')
+            if len(time_values):
+                low, high = self.time_range
+                valid_time = (time_values < 0) | ((time_values >= low) & (time_values <= high))
+                mask &= valid_time.fillna(True).to_numpy()
+
+            # Date filter operates on timestamps in milliseconds
+            ts_values = pd.to_numeric(self.dataframe.get('ts'), errors='coerce')
+            start, end = self.date_range
+            if start is not None and end is not None and len(ts_values):
+                start_ms = start.value // 10**6
+                end_ms = end.value // 10**6
+                within_range = (ts_values >= start_ms) & (ts_values <= end_ms)
+                mask &= within_range.fillna(True).to_numpy()
+
+            self.current_mask = mask
+        else:
+            mask = self.current_mask
+
+        self._update_alpha(mask)
+
+    # ------------------------------------------------------------------
+    def _update_alpha(self, mask: np.ndarray) -> None:
+        booleans = mask.tolist()
+        for flt in self.filters:
+            flt.booleans = booleans
+
+        alpha = np.where(mask, self.current_alpha, 0.0).tolist()
+        new_data = dict(self.source.data)
+        new_data['alpha'] = alpha
+        self.source.data = new_data
+
+        if self.stats_callback is not None:
+            self.stats_callback(mask)
 
 # -----------------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -462,9 +628,6 @@ def prepare_hover_data(metadata, projection):
         # Add to metadata for consistency
         metadata['season'] = season_arr
         
-        # Season visibility flags        
-        season_on = [True] * len(metadata)
-
         # Convert coordinates to Web Mercator for map
         print("  Converting coordinates to Web Mercator...")
         def lonlat_to_mercator_arrays(lon_deg, lat_deg):
@@ -537,54 +700,47 @@ def prepare_hover_data(metadata, projection):
                 time_hours.append(-1)
         
         # Initial alpha (visibility)
-        earliest_date = dates[valid].min() if valid.any() else pd.Timestamp("2000-01-01")
-        alpha = np.where(valid & (dates >= earliest_date), 0.3, 0.0)
-        
+        alpha = np.full(len(metadata), ANALYSIS_PARAMS.get("point_alpha", 0.3))
+
         # Build data dictionary
         print("  Building data dictionary...")
         data = {
-            'x': projection[:, 0].tolist(),
-            'y': projection[:, 1].tolist(),
-            'xcid': metadata['xcid'].tolist(),
+            'x': projection[:, 0],
+            'y': projection[:, 1],
+            'xcid': metadata['xcid'],
             'sex': sex_labels,
             'type': type_labels,
-            'cnt': metadata['country'].tolist(),
-            'lat': metadata['lat'].tolist(),
-            'lon': metadata['lon'].tolist(),
-            'x3857': x3857.tolist(),
-            'y3857': y3857.tolist(),
-            'alt': metadata['alt'].tolist(),
-            'date': metadata['date'].tolist(),
-            'time': metadata['time'].tolist(),
+            'cnt': metadata['country'],
+            'lat': metadata['lat'],
+            'lon': metadata['lon'],
+            'x3857': x3857,
+            'y3857': y3857,
+            'alt': metadata['alt'],
+            'date': metadata['date'],
+            'time': metadata['time'],
             'time_hour': time_hours,
-            'also': metadata['also'].tolist(),
-            'rmk': metadata['remarks'].tolist(),
-            'month': months.tolist(),
-            'ts': ts_ms.tolist(),
-            'valid_date': valid.tolist(),
-            'kmeans3': metadata['kmeans3'].tolist(),
-            'kmeans3_str': metadata['kmeans3_str'].tolist(),
-            'hdbscan_on': [True] * len(metadata),
-            'audio_url': metadata['audio_url'].tolist() if 'audio_url' in metadata else [''] * len(metadata),
-            'season': season_arr.tolist(),
-            'season_on': season_on,
+            'also': metadata['also'],
+            'rmk': metadata['remarks'],
+            'month': months,
+            'ts': ts_ms,
+            'valid_date': valid,
+            'kmeans3': metadata['kmeans3'],
+            'kmeans3_str': metadata['kmeans3_str'],
+            'audio_url': metadata['audio_url'] if 'audio_url' in metadata else [''] * len(metadata),
+            'season': season_arr,
             'season_color': season_colors,
             'cluster_color': cluster_colors,
             'sex_color': sex_colors,
             'type_color': type_colors,
             'time_color': time_colors,
             'active_color': season_colors,  # Start with season colors
-            'alpha': alpha.tolist(),
-            'alpha_base': alpha.tolist(),
-            'cluster_on': [True] * len(metadata),
-            'sex_on': [True] * len(metadata),
-            'type_on': [True] * len(metadata),
-            'time_on': [True] * len(metadata),
-            'original_index': np.arange(len(metadata)).tolist()
+            'alpha': alpha,
+            'original_index': np.arange(len(metadata))
         }
 
-        print(f"Data dictionary created with {len(data)} keys")
-        return data, factors
+        df = pd.DataFrame(data)
+        print(f"Dataframe created with {len(df.columns)} columns")
+        return df, factors
         
     except Exception as e:
         print(f"  ERROR preparing data: {e}")
@@ -595,7 +751,7 @@ def prepare_hover_data(metadata, projection):
 # CREATE PLOTS
 # -----------------------------------------------------------------------------
 
-def create_umap_plot(source):
+def create_umap_plot(source: ColumnDataSource, visible_filter: BooleanFilter):
     """Create the main UMAP scatter plot"""
     print("\n" + "-" * 40)
     print("CREATING UMAP PLOT...")
@@ -636,14 +792,11 @@ def create_umap_plot(source):
     """)
     source.selected.js_on_change('indices', selection_filter_callback)
     
-    # Create a CDSView with boolean filter based on alpha
-    view_filter = BooleanFilter(booleans=[a > 0 for a in source.data['alpha']])
-    view = CDSView(filter=view_filter)
-    
-    # Single scatter renderer using the view
+    view = CDSView(filter=visible_filter)
+
     scatter = p.scatter('x', 'y', source=source, view=view,
                         size=point_size,
-                        fill_color={'field':'active_color'}, 
+                        fill_color={'field':'active_color'},
                         line_color=None,
                         alpha='alpha',
                         hover_line_color="black", 
@@ -671,7 +824,7 @@ def create_umap_plot(source):
     print("  UMAP plot created")
     return p, hover, view
 
-def create_map_plot(source):
+def create_map_plot(source: ColumnDataSource, visible_filter: BooleanFilter):
     """Create the geographic map plot"""
     print("\n" + "-" * 40)
     print("CREATING MAP PLOT...")
@@ -709,15 +862,12 @@ def create_map_plot(source):
     
     hv_line_width = 1.5
     
-    # Create a CDSView with boolean filter based on alpha
-    view_filter = BooleanFilter(booleans=[a > 0 for a in source.data['alpha']])
-    view = CDSView(filter=view_filter)
-    
-    # Single scatter renderer using the view
+    view = CDSView(filter=visible_filter)
+
     map_scatter = map_fig.scatter('x3857','y3857', source=source, view=view,
                                  size=8, # Slightly bigger points on map
                                  fill_color={'field':'active_color'},
-                                 line_color=None, 
+                                 line_color=None,
                                  alpha='alpha',
                                  hover_line_color="black",
                                  hover_alpha=1.0, 
@@ -760,13 +910,18 @@ def create_app():
         projection, metadata = compute_initial_umap(embeddings_array, metadata)
         
         # Prepare data
-        data, factors = prepare_hover_data(metadata, projection)
-        source = ColumnDataSource(data=data)
+        data_df, factors = prepare_hover_data(metadata, projection)
+        source = ColumnDataSource(data=data_df.to_dict(orient='list'))
         print(f"\nColumnDataSource created with {len(source.data['x'])} points")
-        
-        # Create plots - now they return season views
-        umap_plot, umap_hover, umap_view = create_umap_plot(source)
-        map_plot, map_hover, map_view = create_map_plot(source)
+
+        # Create shared visibility filters for the plots
+        initial_mask = [True] * len(data_df)
+        umap_filter = BooleanFilter(booleans=initial_mask.copy())
+        map_filter = BooleanFilter(booleans=initial_mask.copy())
+
+        # Create plots with shared filters
+        umap_plot, umap_hover, umap_view = create_umap_plot(source, umap_filter)
+        map_plot, map_hover, map_view = create_map_plot(source, map_filter)
         
         # --- CREATE ALL WIDGETS ---
         print("\n" + "-" * 40)
@@ -869,6 +1024,8 @@ def create_app():
             value=(start_dt, end_dt),
             step=1, width=1400
         )
+
+        reset_bounds_btn = Button(label="Reset timeline range", button_type="default", width=150)
         
         # --- OTHER WIDGETS ---
         # Hover toggle
@@ -930,491 +1087,172 @@ def create_app():
             visible=False,
             name="hdbscan_checks"
         )
-        
+
+        def _to_datetime(ts):
+            if ts is None or (isinstance(ts, float) and np.isnan(ts)):
+                return None
+            return pd.Timestamp(ts).to_pydatetime()
+
+        filter_manager = FilterManager(
+            source=source,
+            filters=[umap_filter, map_filter],
+            stats_callback=None,
+            base_alpha=ANALYSIS_PARAMS.get('point_alpha', 0.3),
+        )
+
+        def stats_callback(mask: np.ndarray) -> None:
+            try:
+                visible_meta = state.current_meta.loc[mask]
+            except Exception:
+                visible_meta = state.current_meta
+            update_stats_display(visible_meta, stats_div, 1 if state.is_zoomed else 0, date_slider, source)
+
+        def refresh_controls_from_filter_manager() -> None:
+            time_start, time_end = filter_manager.full_time_range
+            time_range_slider.start = time_start
+            time_range_slider.end = time_end
+            time_range_slider.value = (time_start, time_end)
+
+            full_start, full_end = filter_manager.full_date_range
+            if full_start is not None and full_end is not None:
+                start_dt = _to_datetime(full_start)
+                end_dt = _to_datetime(full_end)
+                date_bounds_slider.start = start_dt
+                date_bounds_slider.end = end_dt
+                date_bounds_slider.value = (start_dt, end_dt)
+                date_slider.start = start_dt
+                date_slider.end = end_dt
+                date_slider.value = (start_dt, end_dt)
+                date_slider.title = f"Filter recordings between ({start_dt.date()} to {end_dt.date()})"
+            else:
+                date_slider.title = "Filter recordings between"
+
+        filter_manager.stats_callback = stats_callback
+        filter_manager.update_dataset(data_df)
+        refresh_controls_from_filter_manager()
+
         print("  All widgets created")
-        
+
         # --- SETUP CALLBACKS ---
         print("\n" + "-" * 40)
         print("SETTING UP CALLBACKS...")
-        
+
         # --- CHECKBOX CALLBACKS ---
-        # Season checkbox callback - exactly like cluster callback
-        season_callback = CustomJS(args=dict(src=source, cb=season_checks,
-                                   umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const labs = cb.labels;  // Read current labels from widget
-            const active_indices = cb.active;
-            
-            // Build set of active labels
-            const active = new Set();
-            for (let idx of active_indices) {
-                if (idx < labs.length) {
-                    active.add(labs[idx]);
-                }
-            }
-            
-            const season = d['season'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(season.length).fill(true);
-            const hdbscan_on = d['hdbscan_on'] || new Array(season.length).fill(true);  // ADD THIS
-            const sex_on = d['sex_on'] || new Array(season.length).fill(true);
-            const type_on = d['type_on'] || new Array(season.length).fill(true);
-            const time_on = d['time_on'] || new Array(season.length).fill(true);
-            
-            const n = season.length;
-            for (let i = 0; i < n; i++) {
-                const season_visible = active.has(String(season[i]));
-                d['season_on'][i] = season_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && season_visible) {
-                    alpha[i] = alpha_base[i];
-                } else {
-                    alpha[i] = 0.0;
-                }
-            }
-            
-            // Update views at the end
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        season_checks.js_on_change('active', season_callback)
-        
-        # Cluster checkbox callback - reads labels dynamically
-        cluster_callback = CustomJS(args=dict(src=source, cb=cluster_checks,
-                                   umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const labs = cb.labels;  // Read current labels from widget
-            const active_indices = cb.active;
-            
-            // Build set of active labels
-            const active = new Set();
-            for (let idx of active_indices) {
-                if (idx < labs.length) {
-                    active.add(labs[idx]);
-                }
-            }
-            
-            const km = d['kmeans3_str'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const hdbscan_on = d['hdbscan_on'] || new Array(km.length).fill(true);
-            const sex_on = d['sex_on'] || new Array(km.length).fill(true);
-            const type_on = d['type_on'] || new Array(km.length).fill(true);
-            const time_on = d['time_on'] || new Array(km.length).fill(true);
-            const season_on = d['season_on'] || new Array(km.length).fill(true);
-            
-            const n = km.length;
-            for (let i = 0; i < n; i++) {
-                const cluster_visible = active.has(String(km[i]));
-                d['cluster_on'][i] = cluster_visible;
+        def _selected_labels(widget: CheckboxGroup) -> set[str]:
+            labels = list(widget.labels)
+            return {labels[i] for i in widget.active if i < len(labels)}
 
-                if (cluster_visible && hdbscan_on[i] && season_on[i] && sex_on[i] && type_on[i] && time_on[i]) {
-                    alpha[i] = alpha_base[i];
-                } else {
-                    alpha[i] = 0.0;
-                }
-            }
-            
-            // Update views at the end
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        cluster_checks.js_on_change('active', cluster_callback)
+        def on_season_change(attr, old, new):
+            filter_manager.set_allowed('season', _selected_labels(season_checks))
 
-        # Sex checkbox callback - reads labels dynamically
-        sex_callback = CustomJS(args=dict(src=source, cb=sex_checks,
-                                   umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const labs = cb.labels;  // Read current labels from widget
-            const active_indices = cb.active;
-            
-            // Build set of active labels
-            const active = new Set();
-            for (let idx of active_indices) {
-                if (idx < labs.length) {
-                    active.add(labs[idx]);
-                }
-            }
-            
-            const sex = d['sex'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(sex.length).fill(true);
-            const hdbscan_on = d['hdbscan_on'] || new Array(sex.length).fill(true);
-            const type_on = d['type_on'] || new Array(sex.length).fill(true);
-            const time_on = d['time_on'] || new Array(sex.length).fill(true);
-            const season_on = d['season_on'] || new Array(sex.length).fill(true);
+        def on_cluster_change(attr, old, new):
+            filter_manager.set_allowed('cluster', _selected_labels(cluster_checks))
 
-            
-            const n = sex.length;
-            for (let i = 0; i < n; i++) {
-                const sex_visible = active.has(String(sex[i]));
-                d['sex_on'][i] = sex_visible;
+        def on_sex_change(attr, old, new):
+            filter_manager.set_allowed('sex', _selected_labels(sex_checks))
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_visible && type_on[i] && time_on[i] && season_on[i]) {
-                    alpha[i] = alpha_base[i];
-                } else {
-                    alpha[i] = 0.0;
-                }
-            }
-            
-            // Update views at the end
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        sex_checks.js_on_change('active', sex_callback)
+        def on_type_change(attr, old, new):
+            filter_manager.set_allowed('type', _selected_labels(type_checks))
 
-        # Type checkbox callback - reads labels dynamically
-        type_callback = CustomJS(args=dict(src=source, cb=type_checks,
-                                   umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const labs = cb.labels;  // Read current labels from widget
-            const active_indices = cb.active;
-            
-            // Build set of active labels
-            const active = new Set();
-            for (let idx of active_indices) {
-                if (idx < labs.length) {
-                    active.add(labs[idx]);
-                }
-            }
-            
-            const type = d['type'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(type.length).fill(true);
-            const hdbscan_on = d['hdbscan_on'] || new Array(type.length).fill(true);
-            const sex_on = d['sex_on'] || new Array(type.length).fill(true);
-            const time_on = d['time_on'] || new Array(type.length).fill(true);
-            const season_on = d['season_on'] || new Array(type.length).fill(true);
+        def on_hdbscan_change(attr, old, new):
+            filter_manager.set_allowed('hdbscan', _selected_labels(hdbscan_checks))
 
-            const n = type.length;
-            for (let i = 0; i < n; i++) {
-                const type_visible = active.has(String(type[i]));
-                d['type_on'][i] = type_visible;
-
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_visible && time_on[i] && season_on[i]) {
-                    alpha[i] = alpha_base[i];
-                } else {
-                    alpha[i] = 0.0;
-                }
-            }
-            
-            // Update views at the end
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        type_checks.js_on_change('active', type_callback)
-        
-        # Time range slider callback (what would happen if selection contains invalid times?, like with checkboxes should we read dynamically?)
-        time_range_callback = CustomJS(args=dict(src=source, slider=time_range_slider,
-                                   umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const time_hour = d['time_hour'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            
-            // Add fallback initialization for all _on fields
-            const cluster_on = d['cluster_on'] || new Array(time_hour.length).fill(true);
-            const hdbscan_on = d['hdbscan_on'] || new Array(time_hour.length).fill(true);
-            const sex_on = d['sex_on'] || new Array(time_hour.length).fill(true);
-            const type_on = d['type_on'] || new Array(time_hour.length).fill(true);
-            const season_on = d['season_on'] || new Array(time_hour.length).fill(true);
-
-            const min_hour = slider.value[0];
-            const max_hour = slider.value[1];
-            
-            const n = time_hour.length;
-            for (let i = 0; i < n; i++) {
-                const hour = time_hour[i];
-                // Allow invalid times (-1) or times within range
-                const time_visible = (hour < 0) || (hour >= min_hour && hour <= max_hour);
-                d['time_on'][i] = time_visible;
-                
-                // Alpha is visible only if ALL filters allow it
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_visible && season_on[i]) {
-                    alpha[i] = alpha_base[i];
-                } else {
-                    alpha[i] = 0.0;
-                }
-            }
-            
-            // Update views at the end
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        time_range_slider.js_on_change('value', time_range_callback)
-        
-        color_callback = CustomJS(args=dict(
-            src=source, 
-            sel=color_select,
-            season_checks=season_checks,
-            cluster_checks=cluster_checks,
-            hdbscan_checks=hdbscan_checks,  # Add this
-            sex_checks=sex_checks,
-            type_checks=type_checks,
-            time_slider=time_range_slider
-        ), code="""
-            const d = src.data;
-            const mode = sel.value;
-            
-            // Hide all filter widgets first
-            season_checks.visible = false;
-            cluster_checks.visible = false;
-            hdbscan_checks.visible = false;
-            sex_checks.visible = false;
-            type_checks.visible = false;
-            time_slider.visible = false;
-            
-            // Map mode to color column and show appropriate widget
-            let from_col;
-            switch(mode) {
-                case "Season":
-                    from_col = "season_color";
-                    season_checks.visible = true;
-                    break;
-                case "KMeans":
-                    from_col = "cluster_color";
-                    cluster_checks.visible = true;
-                    break;
-                case "HDBSCAN":
-                    if (d['hdbscan_color']) {
-                        from_col = "hdbscan_color";
-                        hdbscan_checks.visible = true;
-                    } else {
-                        alert("HDBSCAN not yet computed. Please click 'Apply HDBSCAN' first.");
-                        return;
-                    }
-                    break;
-                case "Sex":
-                    from_col = "sex_color";
-                    sex_checks.visible = true;
-                    break;
-                case "Type":
-                    from_col = "type_color";
-                    type_checks.visible = true;
-                    break;
-                case "Time of Day":
-                    from_col = "time_color";
-                    time_slider.visible = true;
-                    break;
-            }
-            
-            // Update colors
-            const n = d['active_color'].length;
-            for (let i = 0; i < n; i++) {
-                d['active_color'][i] = d[from_col][i];
-            }
-            src.change.emit();
-        """)
-        color_select.js_on_change('value', color_callback)
+        season_checks.on_change('active', on_season_change)
+        cluster_checks.on_change('active', on_cluster_change)
+        sex_checks.on_change('active', on_sex_change)
+        type_checks.on_change('active', on_type_change)
+        hdbscan_checks.on_change('active', on_hdbscan_change)
 
         # --- SLIDER CALLBACKS ---
-        # Bounds slider callback - update main slider range
-        bounds_callback = CustomJS(args=dict(
-            bounds=date_bounds_slider,
-            main=date_slider,
-            source=source
-        ), code="""
-            // Get new bounds from the bounds slider
-            const new_start = bounds.value[0];
-            const new_end = bounds.value[1];
-            
-            // Update the main slider's range
-            main.start = new_start;
-            main.end = new_end;
-            
-            // Ensure current value stays within new bounds
-            const current_start = main.value[0];
-            const current_end = main.value[1];
-            
-            // Constrain current selection to new bounds if needed
-            const adjusted_start = Math.max(current_start, new_start);
-            const adjusted_end = Math.min(current_end, new_end);
-            
-            // Only update value if it changed
-            if (adjusted_start != current_start || adjusted_end != current_end) {
-                main.value = [adjusted_start, adjusted_end];
-            }
-            
-            // Optional: Update the main slider's title to show the range
-            const start_date = new Date(new_start).toISOString().split('T')[0];
-            const end_date = new Date(new_end).toISOString().split('T')[0];
-            main.title = `Filter recordings between (${start_date} to ${end_date})`;
-        """)
-        date_bounds_slider.js_on_change('value', bounds_callback)
 
-        # Also add a reset button for the bounds slider
-        reset_bounds_btn = Button(label="Reset timeline range", button_type="default", width=150)
-        reset_bounds_callback = CustomJS(args=dict(
-            bounds=date_bounds_slider,
-            main=date_slider,
-            source=source
-        ), code="""
-            // Find actual data bounds
-            const dates = source.data['ts'];
-            let data_min = Infinity;
-            let data_max = -Infinity;
-            
-            for (let ts of dates) {
-                if (!Number.isNaN(ts)) {
-                    if (ts < data_min) data_min = ts;
-                    if (ts > data_max) data_max = ts;
-                }
-            }
-            
-            // Reset both sliders to full data range
-            bounds.value = [data_min, data_max];
-            main.start = data_min;
-            main.end = data_max;
-            main.title = "Filter recordings between";
-        """)
-        reset_bounds_btn.js_on_click(reset_bounds_callback)
-                
-        # Date slider callback - update stats when slider changes
-        date_callback = CustomJS(args=dict(src=source, s=date_slider, stats=stats_div,
-                                   umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const ts = d['ts'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(ts.length).fill(true);
-            const hdbscan_on = d['hdbscan_on'] || new Array(ts.length).fill(true);
-            const sex_on = d['sex_on'] || new Array(ts.length).fill(true);
-            const type_on = d['type_on'] || new Array(ts.length).fill(true);
-            const time_on = d['time_on'] || new Array(ts.length).fill(true);
-            const season_on = d['season_on'] || new Array(ts.length).fill(true);
-            
-            const cut0 = Number(s.value[0]);
-            const cut1 = Number(s.value[1]);
-            
-            let visible_count = 0;
-            for (let i = 0; i < ts.length; i++) {
-                let base = Number.isNaN(ts[i]) ? 0.0 : 
-                          (ts[i] >= cut0 && ts[i] <= cut1) ? 0.3 : 0;
-                alpha_base[i] = base;
-                
-                // Final alpha depends on ALL filters
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && season_on[i] && base > 0) {
-                    alpha[i] = base;
-                } else {
-                    alpha[i] = 0.0;
-                }
-                
-                if (alpha[i] > 0) visible_count++;
-            }
-            
-            // Update stats display to show visible count
-            const start_date = new Date(cut0).toISOString().split('T')[0];
-            const end_date = new Date(cut1).toISOString().split('T')[0];
-            
-            // Keep existing HTML but update the visible count
-            let html = stats.text;
-            if (html.includes('(Visible:')) {
-                html = html.replace(/\(Visible: \d+\)/, `(Visible: ${visible_count})`);
-            } else {
-                html = html.replace(/Total Points:<\/b> (\d+)/, 
-                                  `Total Points:</b> $1 (Visible: ${visible_count})`);
-            }
-            
-            // Update date filter line
-            if (html.includes('Date Filter:')) {
-                html = html.replace(/Date Filter:<\/b> [\d-]+ to [\d-]+/, 
-                                  `Date Filter:</b> ${start_date} to ${end_date}`);
-            } else {
-                html = html.replace('</div>', 
-                                  `<br><b>Date Filter:</b> ${start_date} to ${end_date}</div>`);
-            }
-            
-            stats.text = html;
-            
-            
-            // Update views at the end
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < ts.length; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < ts.length; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        date_slider.js_on_change('value', date_callback)
-        
-        # --- OTHER CALLBACKS ---
+        def on_time_range_change(attr, old, new):
+            start, end = new
+            filter_manager.set_time_range(float(start), float(end))
+
+        def on_date_change(attr, old, new):
+            start = pd.Timestamp(new[0]) if new and new[0] is not None else None
+            end = pd.Timestamp(new[1]) if new and new[1] is not None else None
+            filter_manager.set_date_range(start, end)
+
+        def on_bounds_change(attr, old, new):
+            start, end = new
+            date_slider.start = start
+            date_slider.end = end
+            current_start, current_end = date_slider.value
+            new_start = max(current_start, start)
+            new_end = min(current_end, end)
+            if (new_start, new_end) != date_slider.value:
+                date_slider.value = (new_start, new_end)
+            if start and end:
+                start_label = pd.Timestamp(start).date()
+                end_label = pd.Timestamp(end).date()
+                date_slider.title = f"Filter recordings between ({start_label} to {end_label})"
+
+        def on_reset_bounds():
+            start, end = filter_manager.full_date_range
+            if start is None or end is None:
+                return
+            start_dt = _to_datetime(start)
+            end_dt = _to_datetime(end)
+            date_bounds_slider.value = (start_dt, end_dt)
+            date_slider.start = start_dt
+            date_slider.end = end_dt
+            date_slider.value = (start_dt, end_dt)
+            date_slider.title = f"Filter recordings between ({start_dt.date()} to {end_dt.date()})"
+
+        time_range_slider.on_change('value', on_time_range_change)
+        date_slider.on_change('value', on_date_change)
+        date_bounds_slider.on_change('value', on_bounds_change)
+        reset_bounds_btn.on_click(on_reset_bounds)
+
+        # --- COLOR SELECTION ---
+
+        color_columns = {
+            "Season": "season_color",
+            "KMeans": "cluster_color",
+            "HDBSCAN": "hdbscan_color",
+            "Sex": "sex_color",
+            "Type": "type_color",
+            "Time of Day": "time_color",
+        }
+
+        def on_color_change(attr, old, new):
+            if new == "HDBSCAN" and 'hdbscan_color' not in source.data:
+                hdbscan_stats_div.text = "<b>HDBSCAN:</b> Compute clusters to enable colouring."
+                target = old if old in color_select.options else "Season"
+                if color_select.value != target:
+                    color_select.value = target
+                return
+
+            for widget in (season_checks, cluster_checks, hdbscan_checks, sex_checks, type_checks):
+                widget.visible = False
+            time_range_slider.visible = False
+
+            if new == "Season":
+                season_checks.visible = True
+            elif new == "KMeans":
+                cluster_checks.visible = True
+            elif new == "HDBSCAN":
+                hdbscan_checks.visible = True
+            elif new == "Sex":
+                sex_checks.visible = True
+            elif new == "Type":
+                type_checks.visible = True
+            elif new == "Time of Day":
+                time_range_slider.visible = True
+
+            column = color_columns.get(new)
+            if column is None or column not in source.data:
+                return
+
+            new_data = dict(source.data)
+            new_data['active_color'] = list(source.data[column])
+            source.data = new_data
+
+        color_select.on_change('value', on_color_change)
+
+# --- OTHER CALLBACKS ---
         # Hover toggle callback
         hover_toggle_callback = CustomJS(args=dict(
             h_u=umap_hover, h_m=map_hover, toggle=hover_toggle
@@ -1572,27 +1410,11 @@ def create_app():
         """)
         source.selected.js_on_change('indices', playlist_callback)
         
-        # Alpha toggle callback - instant change
-        alpha_toggle_callback = CustomJS(args=dict(src=source, toggle=alpha_toggle), code="""
-            const d = src.data;
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const new_alpha = toggle.active ? 1.0 : 0.3;
-            
-            // Update base alpha for all visible points
-            for (let i = 0; i < alpha_base.length; i++) {
-                if (alpha_base[i] > 0) {
-                    alpha_base[i] = new_alpha;
-                    // Also update current alpha if it's visible
-                    if (alpha[i] > 0) {
-                        alpha[i] = new_alpha;
-                    }
-                }
-            }
-            
-            src.change.emit();
-        """)
-        alpha_toggle.js_on_change('active', alpha_toggle_callback)
+        def on_alpha_toggle(attr, old, new):
+            alpha_value = 1.0 if alpha_toggle.active else ANALYSIS_PARAMS.get('point_alpha', 0.3)
+            filter_manager.set_alpha(alpha_value)
+
+        alpha_toggle.on_change('active', on_alpha_toggle)
         
         # Zoom and reset callbacks
         # Define zoom functions inline in create_app scope
@@ -1653,57 +1475,37 @@ def create_app():
             state.projection = new_projection
             state.is_zoomed = True
             
+            had_hdbscan = 'hdbscan_str' in source.data
+
             # Update visualization
-            new_data, new_factors = prepare_hover_data(subset_meta, new_projection)
-            
-            # Get new unique values             
-            new_unique_seasons = sorted(set(new_data['season']))
-            new_unique_clusters = sorted(set(new_data['kmeans3_str']))
-            new_unique_sex = sorted(set(new_data['sex']))
-            new_unique_type = sorted(set(new_data['type']))
-            
-            print(f"[ZOOM] New seasons: {new_unique_seasons}")
-            print(f"[ZOOM] New factors: {new_factors}")
-            print(f"[ZOOM] New sex values: {new_unique_sex}")
-            print(f"[ZOOM] New type values: {new_unique_type}")
-            
-            # All points start visible after zoom
-            new_data['alpha'] = [0.3] * len(new_data['x'])
-            new_data['alpha_base'] = [0.3] * len(new_data['x'])
-            
-            # Reset all filter states to True
-            new_data['season_on'] = [True] * len(new_data['x'])
-            new_data['cluster_on'] = [True] * len(new_data['x'])
-            new_data['hdbscan_on'] = [True] * len(new_data['x'])
-            new_data['sex_on'] = [True] * len(new_data['x'])
-            new_data['type_on'] = [True] * len(new_data['x'])
-            new_data['time_on'] = [True] * len(new_data['x'])
-            
-            # If HDBSCAN was computed, recompute for zoomed data
-            if 'hdbscan_str' in source.data:
-                # Recompute HDBSCAN on zoomed projection
-                compute_hdbscan_clustering()  # This will update the zoomed data
-            
-            # When we zoom, and we recreate widgets, should this source data be changed before their creation? Does this currently happen?
-            source.data = new_data
-            
-            # Update filter widgets with new unique values and reset to all active
-            season_checks.labels = new_unique_seasons
-            season_checks.active = list(range(len(new_unique_seasons)))
+            zoom_df, _ = prepare_hover_data(subset_meta, new_projection)
 
-            cluster_checks.labels = new_unique_clusters
-            cluster_checks.active = list(range(len(new_unique_clusters)))
-            
-            sex_checks.labels = new_unique_sex
-            sex_checks.active = list(range(len(new_unique_sex)))
-            
-            type_checks.labels = new_unique_type
-            type_checks.active = list(range(len(new_unique_type)))
+            print(f"[ZOOM] New seasons: {sorted(zoom_df['season'].astype(str).unique())}")
+            print(f"[ZOOM] New clusters: {sorted(zoom_df['kmeans3_str'].astype(str).unique())}")
 
-            print(f"[ZOOM] Updated widgets - seasons: {len(new_unique_seasons)}, clusters: {len(new_unique_clusters)}, sex: {len(new_unique_sex)}, type: {len(new_unique_type)}")
+            source.data = zoom_df.to_dict(orient='list')
+            filter_manager.update_dataset(zoom_df)
+            refresh_controls_from_filter_manager()
 
-            # Update displays
-            update_stats_display(subset_meta, stats_div, 1, source=source)
+            def _reset_widget(widget: CheckboxGroup, values: list[str]) -> None:
+                widget.labels = values
+                widget.active = list(range(len(values)))
+
+            _reset_widget(season_checks, sorted(zoom_df['season'].astype(str).unique()))
+            _reset_widget(cluster_checks, sorted(zoom_df['kmeans3_str'].astype(str).unique()))
+            _reset_widget(sex_checks, sorted(zoom_df['sex'].astype(str).unique()))
+            _reset_widget(type_checks, sorted(zoom_df['type'].astype(str).unique()))
+
+            if had_hdbscan:
+                compute_hdbscan_clustering()
+            else:
+                hdbscan_checks.labels = []
+                hdbscan_checks.active = []
+                filter_manager.clear_hdbscan()
+
+            if color_select.value == "HDBSCAN" and 'hdbscan_color' not in source.data:
+                color_select.value = "Season"
+
             zoom_status.text = f"Viewing: Zoomed subset ({len(actual_indices)} points)"
             print(f"[ZOOM] Complete. Showing {len(actual_indices)} points")
         
@@ -1719,66 +1521,42 @@ def create_app():
             
             # Force recomputation by clearing the projection first
             state.projection = None  # This ensures compute_initial_umap will actually compute
-            
+
             # Recompute fresh UMAP on full dataset with user-specified parameters
             n_neighbors = umap_neighbors_input.value
             min_dist = umap_mindist_input.value
-            
+
             print(f"[RESET] Using UMAP parameters: n_neighbors={n_neighbors}, min_dist={min_dist}")
-            
+
             state.projection, state.current_meta = compute_initial_umap(
-                state.original_embeddings, 
+                state.original_embeddings,
                 state.current_meta,
                 n_neighbors=n_neighbors,
                 min_dist=min_dist
             )
-            
-            # Prepare full data with original factors
-            new_data, original_factors = prepare_hover_data(state.current_meta, state.projection)
-            
-            # Get unique values for the full dataset
-            original_unique_seasons = sorted(set(new_data['season']))            
-            original_unique_clusters = sorted(set(new_data['kmeans3_str']))
-            original_unique_sex = sorted(set(new_data['sex']))
-            original_unique_type = sorted(set(new_data['type']))
-            original_unique_seasons = sorted(set(new_data['season']))
 
-            print(f"[RESET] Original seasons: {original_unique_seasons}")
-            print(f"[RESET] Original factors: {original_factors}")
-            print(f"[RESET] Original sex values: {original_unique_sex}")
-            print(f"[RESET] Original type values: {original_unique_type}")
-            
-            # Reset all filter states to True for full dataset
-            new_data['season_on'] = [True] * len(new_data['x'])
-            new_data['cluster_on'] = [True] * len(new_data['x'])
-            new_data['hdbscan_on'] = [True] * len(new_data['x'])
-            new_data['sex_on'] = [True] * len(new_data['x'])
-            new_data['type_on'] = [True] * len(new_data['x'])
-            new_data['time_on'] = [True] * len(new_data['x'])
-            
-            # same comment as in zoom_to_visible
-            source.data = new_data
-            
-            # Reset filter widgets with original values and set all active
-            season_checks.labels = original_unique_seasons
-            season_checks.active = list(range(len(original_unique_seasons)))
-    
-            cluster_checks.labels = original_unique_clusters
-            cluster_checks.active = list(range(len(original_unique_clusters)))
+            full_df, _ = prepare_hover_data(state.current_meta, state.projection)
 
-            sex_checks.labels = original_unique_sex
-            sex_checks.active = list(range(len(original_unique_sex)))
-            
-            type_checks.labels = original_unique_type
-            type_checks.active = list(range(len(original_unique_type)))
-            
-            # Reset time range slider to full range
-            time_range_slider.value = (0, 24)
+            source.data = full_df.to_dict(orient='list')
+            filter_manager.update_dataset(full_df)
+            refresh_controls_from_filter_manager()
 
-            print(f"[RESET] Reset widgets - seasons: {len(original_unique_seasons)}, clusters: {len(original_unique_clusters)}, sex: {len(original_unique_sex)}, type: {len(original_unique_type)}")
+            def _reset_widget(widget: CheckboxGroup, values: list[str]) -> None:
+                widget.labels = values
+                widget.active = list(range(len(values)))
 
-            # Update displays
-            update_stats_display(state.current_meta, stats_div, 0, source=source)
+            _reset_widget(season_checks, sorted(full_df['season'].astype(str).unique()))
+            _reset_widget(cluster_checks, sorted(full_df['kmeans3_str'].astype(str).unique()))
+            _reset_widget(sex_checks, sorted(full_df['sex'].astype(str).unique()))
+            _reset_widget(type_checks, sorted(full_df['type'].astype(str).unique()))
+
+            hdbscan_checks.labels = []
+            hdbscan_checks.active = []
+            filter_manager.clear_hdbscan()
+
+            if color_select.value == "HDBSCAN":
+                color_select.value = "Season"
+
             zoom_status.text = "Viewing: Full dataset"
             print(f"[RESET] Complete - showing {len(state.current_meta)} points")
         
@@ -1805,116 +1583,64 @@ def create_app():
         def compute_hdbscan_clustering():
             """Compute HDBSCAN clustering on current projection"""
             print("\n[HDBSCAN] Computing clusters...")
-            
+
             min_cluster_size = hdbscan_min_cluster_size.value
             min_samples = hdbscan_min_samples.value
-            
+
             print(f"  min_cluster_size: {min_cluster_size}")
             print(f"  min_samples: {min_samples}")
-            
-            # Run HDBSCAN on current projection
+
             clusterer = hdbscan.HDBSCAN(
                 min_cluster_size=min_cluster_size,
                 min_samples=min_samples,
                 metric='euclidean'
             )
-            
+
             cluster_labels = clusterer.fit_predict(state.projection)
-            
-            # HDBSCAN uses -1 for noise points
             cluster_labels_str = [str(label) if label >= 0 else "Noise" for label in cluster_labels]
-            
-            # Calculate metrics
+
             n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
             n_noise = sum(1 for label in cluster_labels if label == -1)
-            
+
             print(f"  Found {n_clusters} clusters")
             print(f"  Noise points: {n_noise} ({100*n_noise/len(cluster_labels):.1f}%)")
-            
-            # Update the source data
-            current_data = dict(source.data)
-            current_data['hdbscan'] = cluster_labels.tolist()
-            current_data['hdbscan_str'] = cluster_labels_str
-            
-            # Create color mapping for HDBSCAN
+
             unique_hdbscan = sorted(set(cluster_labels_str))
-            hdbscan_palette = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3", 
-                            "#ff7f00", "#ffff33", "#a65628", "#f781bf"]
-            
+            hdbscan_palette = ["#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
+                               "#ff7f00", "#ffff33", "#a65628", "#f781bf"]
             hdbscan_color_map = {}
             for i, label in enumerate(unique_hdbscan):
                 if label == "Noise":
-                    hdbscan_color_map[label] = "#CCCCCC"  # Gray for noise
+                    hdbscan_color_map[label] = "#CCCCCC"
                 else:
                     hdbscan_color_map[label] = hdbscan_palette[i % len(hdbscan_palette)]
-            
-            current_data['hdbscan_color'] = [hdbscan_color_map[str(c)] for c in cluster_labels_str]
-            current_data['hdbscan_on'] = [True] * len(cluster_labels)
-            
-            # Update HDBSCAN checkboxes
+
+            df = filter_manager.dataframe.copy()
+            df['hdbscan'] = cluster_labels.tolist()
+            df['hdbscan_str'] = cluster_labels_str
+            df['hdbscan_color'] = [hdbscan_color_map[str(c)] for c in cluster_labels_str]
+
+            if color_select.value == "HDBSCAN":
+                df['active_color'] = df['hdbscan_color']
+
+            source.data = df.to_dict(orient='list')
+            filter_manager.dataframe = df
+            filter_manager.update_hdbscan(cluster_labels_str)
+
             hdbscan_checks.labels = unique_hdbscan
             hdbscan_checks.active = list(range(len(unique_hdbscan)))
-            
-            source.data = current_data
-            
-            # Update stats
-            hdbscan_stats_div.text = f"<b>HDBSCAN:</b> {n_clusters} clusters, {n_noise} noise points ({100*n_noise/len(cluster_labels):.1f}%)"
 
-        # HDBSCAN checkbox callback
-        hdbscan_callback = CustomJS(args=dict(src=source, cb=hdbscan_checks,
-                                umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const labs = cb.labels;
-            const active_indices = cb.active;
-            
-            // Build set of active labels
-            const active = new Set();
-            for (let idx of active_indices) {
-                if (idx < labs.length) {
-                    active.add(labs[idx]);
-                }
-            }
-            
-            const hdbscan = d['hdbscan_str'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const season_on = d['season_on'] || new Array(hdbscan.length).fill(true);
-            const cluster_on = d['cluster_on'] || new Array(hdbscan.length).fill(true);
-            const sex_on = d['sex_on'] || new Array(hdbscan.length).fill(true);
-            const type_on = d['type_on'] || new Array(hdbscan.length).fill(true);
-            const time_on = d['time_on'] || new Array(hdbscan.length).fill(true);
-            
-            const n = hdbscan.length;
-            for (let i = 0; i < n; i++) {
-                const hdbscan_visible = active.has(String(hdbscan[i]));
-                d['hdbscan_on'][i] = hdbscan_visible;
-                
-                if (season_on[i] && cluster_on[i] && sex_on[i] && type_on[i] && 
-                    time_on[i] && hdbscan_visible) {
-                    alpha[i] = alpha_base[i];
-                } else {
-                    alpha[i] = 0.0;
-                }
-            }
-            
-            // Update views
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        hdbscan_checks.js_on_change('active', hdbscan_callback)
+            if color_select.value == "HDBSCAN" and 'hdbscan_color' in source.data:
+                new_data = dict(source.data)
+                new_data['active_color'] = list(source.data['hdbscan_color'])
+                source.data = new_data
+
+            hdbscan_stats_div.text = (
+                f"<b>HDBSCAN:</b> {n_clusters} clusters, {n_noise} noise points "
+                f"({100*n_noise/len(cluster_labels):.1f}%)"
+            )
+
+
 
         # Add callback for apply button
         hdbscan_apply_btn.on_click(compute_hdbscan_clustering)
