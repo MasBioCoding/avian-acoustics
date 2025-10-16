@@ -579,7 +579,10 @@ def prepare_hover_data(metadata, projection):
             'sex_on': [True] * len(metadata),
             'type_on': [True] * len(metadata),
             'time_on': [True] * len(metadata),
-            'original_index': np.arange(len(metadata)).tolist()
+            'original_index': np.arange(len(metadata)).tolist(),
+            # fields used to draw highlight outlines on hover over playlist items
+            'hl_alpha': [0.0] * len(metadata),
+            'hl_width': [0.0] * len(metadata)
         }
 
         print(f"Data dictionary created with {len(data)} keys")
@@ -594,7 +597,7 @@ def prepare_hover_data(metadata, projection):
 # CREATE PLOTS
 # -----------------------------------------------------------------------------
 
-def create_umap_plot(source, highlight_source):
+def create_umap_plot(source):
     """Create the main UMAP scatter plot"""
     print("\n" + "-" * 40)
     print("CREATING UMAP PLOT...")
@@ -639,21 +642,19 @@ def create_umap_plot(source, highlight_source):
     view_filter = BooleanFilter(booleans=[a > 0 for a in source.data['alpha']])
     view = CDSView(filter=view_filter)
     
+    # Single scatter renderer using the view
+    # Use dynamic line properties to allow highlighting individual points.
+    # The 'hl_alpha' and 'hl_width' columns will control the outline of each point.
     scatter = p.scatter('x', 'y', source=source, view=view,
                         size=point_size,
-                        fill_color={'field':'active_color'}, 
-                        line_color=None,
+                        fill_color={'field':'active_color'},
+                        line_color='black',
+                        line_alpha={'field':'hl_alpha'},
+                        line_width={'field':'hl_width'},
                         alpha='alpha',
                         hover_line_color="black",
                         hover_alpha=1.0,
                         hover_line_width=1.5)
-    
-    p.circle('x', 'y', source=highlight_source,
-             size=point_size + 6,
-             fill_color=None,
-             line_color='black',
-             line_width=3,
-             alpha=1.0)
         
     # Hover tool - will only work on visible points (alpha > 0)
     hover = HoverTool(
@@ -676,7 +677,7 @@ def create_umap_plot(source, highlight_source):
     print("  UMAP plot created")
     return p, hover, view
 
-def create_map_plot(source, highlight_source):
+def create_map_plot(source):
     """Create the geographic map plot"""
     print("\n" + "-" * 40)
     print("CREATING MAP PLOT...")
@@ -720,20 +721,15 @@ def create_map_plot(source, highlight_source):
     
     # Single scatter renderer using the view
     map_scatter = map_fig.scatter('x3857','y3857', source=source, view=view,
-                                 size=8, # Slightly bigger points on map
+                                 size=8,  # Slightly bigger points on map
                                  fill_color={'field':'active_color'},
-                                 line_color=None, 
+                                 line_color='black',
+                                 line_alpha={'field':'hl_alpha'},
+                                 line_width={'field':'hl_width'},
                                  alpha='alpha',
                                  hover_line_color="black",
                                  hover_alpha=1.0,
                                  hover_line_width=1.5)
-    
-    map_fig.circle('x3857', 'y3857', source=highlight_source,
-                   size=12,
-                   fill_color=None,
-                   line_color='black',
-                   line_width=3,
-                   alpha=1.0)
     
     # Store view reference
 
@@ -774,17 +770,13 @@ def create_app():
         # Prepare data
         data, factors = prepare_hover_data(metadata, projection)
         source = ColumnDataSource(data=data)
-        highlight_source = ColumnDataSource(data={
-            'x': [],
-            'y': [],
-            'x3857': [],
-            'y3857': []
-        })
+        # Assign a name to the data source so it can be retrieved from JavaScript.
+        source.name = 'source'
         print(f"\nColumnDataSource created with {len(source.data['x'])} points")
         
         # Create plots - now they return season views
-        umap_plot, umap_hover, umap_view = create_umap_plot(source, highlight_source)
-        map_plot, map_hover, map_view = create_map_plot(source, highlight_source)
+        umap_plot, umap_hover, umap_view = create_umap_plot(source)
+        map_plot, map_hover, map_view = create_map_plot(source)
         
         # --- CREATE ALL WIDGETS ---
         print("\n" + "-" * 40)
@@ -1495,22 +1487,11 @@ def create_app():
             window._ctx = 'map';
         """))
         
-        playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel, highlight_src=highlight_source), code="""
+        playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel), code="""
             const d = src.data;
             const inds = src.selected.indices;
             if (!inds.length) return;
             const i = inds[0];
-            
-            const clearHighlight = () => {
-                highlight_src.data = {
-                    x: [],
-                    y: [],
-                    x3857: [],
-                    y3857: []
-                };
-                highlight_src.change.emit();
-            };
-            clearHighlight();
             
             // Check if the clicked point is visible
             if (d['alpha'][i] <= 0) {
@@ -1581,7 +1562,13 @@ def create_app():
                 const date = d['date'][j];
                 const url = d['audio_url'] ? d['audio_url'][j] : "";
                 
-                html += `<div class="playlist-item" data-index="${j}" style="display:flex;align-items:center;margin:4px 0;">
+                // Each recording row becomes sensitive to mouse enter/leave events.
+                // When hovering over a playlist item, draw an outline around the corresponding point
+                // in both the UMAP and map plots by updating the hl_alpha and hl_width fields.
+                html += `<div style="display:flex;align-items:center;margin:4px 0;"
+                    onmouseenter="var src = Bokeh.documents[0].get_model_by_name('source'); var d = src.data; if(window._hl_idx != null){ d['hl_alpha'][window._hl_idx] = 0; d['hl_width'][window._hl_idx] = 0; } window._hl_idx = ${j}; d['hl_alpha'][${j}] = 1; d['hl_width'][${j}] = 3; src.change.emit();"
+                    onmouseleave="var src = Bokeh.documents[0].get_model_by_name('source'); var d = src.data; if(window._hl_idx != null){ d['hl_alpha'][window._hl_idx] = 0; d['hl_width'][window._hl_idx] = 0; src.change.emit(); window._hl_idx = null; }"
+                >
                     <button onclick="(function(u){
                         if(!u) return;
                         if(window._BN_audio) window._BN_audio.pause();
@@ -1597,46 +1584,6 @@ def create_app():
             
             html += '</div>';
             pane.text = html;
-            
-            const highlightIndex = (idx) => {
-                if (!Number.isFinite(idx)) {
-                    clearHighlight();
-                    return;
-                }
-                const newData = {
-                    x: [],
-                    y: [],
-                    x3857: [],
-                    y3857: []
-                };
-                const xVal = Number(d['x'][idx]);
-                const yVal = Number(d['y'][idx]);
-                if (Number.isFinite(xVal) && Number.isFinite(yVal)) {
-                    newData.x.push(xVal);
-                    newData.y.push(yVal);
-                }
-                const mxVal = Number(d['x3857'][idx]);
-                const myVal = Number(d['y3857'][idx]);
-                if (Number.isFinite(mxVal) && Number.isFinite(myVal)) {
-                    newData.x3857.push(mxVal);
-                    newData.y3857.push(myVal);
-                }
-                highlight_src.data = newData;
-                highlight_src.change.emit();
-            };
-            setTimeout(() => {
-                const container = document.getElementById(pane.id);
-                if (!container) {
-                    return;
-                }
-                const entries = container.querySelectorAll('.playlist-item');
-                entries.forEach((entry) => {
-                    const idx = Number(entry.dataset.index);
-                    entry.addEventListener('mouseenter', () => highlightIndex(idx));
-                    entry.addEventListener('mouseleave', () => clearHighlight());
-                    entry.addEventListener('click', () => highlightIndex(idx));
-                });
-            }, 0);
         """)
         source.selected.js_on_change('indices', playlist_callback)
         
@@ -1754,12 +1701,6 @@ def create_app():
             
             # When we zoom, and we recreate widgets, should this source data be changed before their creation? Does this currently happen?
             source.data = new_data
-            highlight_source.data = {
-                'x': [],
-                'y': [],
-                'x3857': [],
-                'y3857': []
-            }
             
             # Update filter widgets with new unique values and reset to all active
             season_checks.labels = new_unique_seasons
@@ -1832,12 +1773,6 @@ def create_app():
             
             # same comment as in zoom_to_visible
             source.data = new_data
-            highlight_source.data = {
-                'x': [],
-                'y': [],
-                'x3857': [],
-                'y3857': []
-            }
             
             # Reset filter widgets with original values and set all active
             season_checks.labels = original_unique_seasons
