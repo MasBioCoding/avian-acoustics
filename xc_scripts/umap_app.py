@@ -1489,6 +1489,7 @@ def create_app():
         """))
         map_plot.js_on_event('tap', CustomJS(code="""
             window._ctx = 'map';
+        """))
         
         playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel), code="""
             const d = src.data;
