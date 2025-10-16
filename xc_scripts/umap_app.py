@@ -3,6 +3,8 @@
 UMAP Yellowhammer Visualization with Interactive Zoom
 Bokeh Server Application - COMPLETE VERSION
 
+Interactive plots expose box, lasso, and polygon selection tools for filtering points.
+
 To run:
 1. Save this file as 'xc_scripts/umap_app.py'
 2. Start audio server in separate terminal:
@@ -15,6 +17,7 @@ To run:
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_domesticus"
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/parus_major"
     cd "/Volumes/Z Slim/zslim_birdcluster/clips/buteo_buteo"
+    cd "/Volumes/Z Slim/zslim_birdcluster/clips/fringilla_coelebs"
     python3 -m http.server 8765
 3. Run the Bokeh app:
     cd /path/to/birdnet_data_pipeline
@@ -60,6 +63,7 @@ from bokeh.io import curdoc
 from bokeh.layouts import column, row
 from bokeh.models import (
     ColumnDataSource, Button, Div, DateRangeSlider, HoverTool, BoxSelectTool,
+    LassoSelectTool, PolySelectTool,
     TapTool, Toggle, Select, CheckboxGroup, CustomJS, RangeSlider, CDSView, BooleanFilter,
     Spinner
 )
@@ -613,16 +617,20 @@ def create_umap_plot(source):
         border_fill_color="#ffe88c"
     )
     
-    # Add box select tool
+    # Add selection tools (box default plus lasso/polygon for freeform filtering)
     box_select = BoxSelectTool()
-    p.add_tools(box_select)
+    lasso_select = LassoSelectTool()
+    poly_select = PolySelectTool()
+    p.add_tools(box_select, lasso_select, poly_select)
     p.toolbar.active_drag = box_select
     
     # Filter selections to only include visible points
     selection_filter_callback = CustomJS(args=dict(source=source), code="""
         const indices = source.selected.indices;
-        if (indices.length === 0) return;
-        
+        if (!indices || indices.length === 0) {
+            return;
+        }
+
         const alpha = source.data['alpha'];
         const filtered = [];
         
@@ -704,7 +712,14 @@ def create_map_plot(source):
         background_fill_color="#ffe88c",
         border_fill_color="#ffe88c"
     )
-    
+
+    # Mirror selection tools from the UMAP plot for consistent interactions
+    map_box_select = BoxSelectTool()
+    map_lasso_select = LassoSelectTool()
+    map_poly_select = PolySelectTool()
+    map_fig.add_tools(map_box_select, map_lasso_select, map_poly_select)
+    map_fig.toolbar.active_drag = map_box_select
+
     try:
         map_fig.add_tile("CartoDB Positron", retina=True)
     except:
