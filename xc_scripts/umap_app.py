@@ -47,7 +47,7 @@ import argparse
 import sys
 import yaml
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from importlib_metadata import metadata
 import pandas as pd
 import numpy as np
@@ -426,12 +426,23 @@ def compute_initial_umap(embeddings_array, metadata, n_neighbors=None, min_dist=
 # DATA PREPARATION
 # -----------------------------------------------------------------------------
 
-def prepare_hover_data(metadata, projection):
+def prepare_hover_data(
+    metadata: pd.DataFrame,
+    projection: np.ndarray,
+    point_alpha: Optional[float] = None,
+) -> Tuple[dict[str, list], list[str]]:
     """Prepare data for hover tooltips and interactions"""
     print("\n" + "-" * 40)
     print("PREPARING HOVER DATA...")
-    
+
     try:
+        effective_alpha = (
+            float(point_alpha)
+            if point_alpha is not None
+            else float(ANALYSIS_PARAMS.get("point_alpha", 0.3))
+        )
+        effective_alpha = max(min(effective_alpha, 1.0), 0.01)
+
         # Parse dates
         print("  Parsing dates...")
         dates = pd.to_datetime(pd.Series(metadata['date']), errors='coerce')
@@ -538,11 +549,11 @@ def prepare_hover_data(metadata, projection):
         
         # Initial alpha (visibility)
         earliest_date = dates[valid].min() if valid.any() else pd.Timestamp("2000-01-01")
-        alpha = np.where(valid & (dates >= earliest_date), 0.3, 0.0)
+        alpha = np.where(valid & (dates >= earliest_date), effective_alpha, 0.0)
         
         # Build data dictionary
         print("  Building data dictionary...")
-        data = {
+        data: dict[str, list] = {
             'x': projection[:, 0].tolist(),
             'y': projection[:, 1].tolist(),
             'xcid': metadata['xcid'].tolist(),
@@ -760,7 +771,12 @@ def create_app():
         projection, metadata = compute_initial_umap(embeddings_array, metadata)
         
         # Prepare data
-        data, factors = prepare_hover_data(metadata, projection)
+        point_alpha_default = max(
+            min(float(ANALYSIS_PARAMS.get('point_alpha', 0.3)), 1.0), 0.01
+        )
+        data, factors = prepare_hover_data(
+            metadata, projection, point_alpha=point_alpha_default
+        )
         source = ColumnDataSource(data=data)
         print(f"\nColumnDataSource created with {len(source.data['x'])} points")
         
@@ -884,8 +900,24 @@ def create_app():
                            styles={'border':'1px solid #ddd','padding':'8px','background':'#fff'})
         playlist_panel.text = "<i>Click a point in either plot to list nearby recordings...</i>"
         
-        # Alpha toggle for point transparency
+        # Alpha controls for point transparency
         alpha_toggle = Toggle(label="Full opacity", active=False, width=120)
+        point_alpha_spinner = Spinner(
+            title="Point alpha",
+            low=0.05,
+            high=1.0,
+            step=0.05,
+            value=point_alpha_default,
+            width=120,
+        )
+
+        def get_spinner_alpha() -> float:
+            """Return the current spinner alpha, clamped to (0, 1]."""
+            try:
+                value = float(point_alpha_spinner.value)
+            except (TypeError, ValueError):
+                value = point_alpha_default
+            return max(min(value, 1.0), 0.01)
 
         # UMAP parameter inputs
         umap_params_div = Div(text="<b>UMAP Parameters:</b>", width=200)
@@ -1339,7 +1371,9 @@ def create_app():
                 
         # Date slider callback - update stats when slider changes
         date_callback = CustomJS(args=dict(src=source, s=date_slider, stats=stats_div,
-                                   umap_view=umap_view, map_view=map_view), code="""
+                                   umap_view=umap_view, map_view=map_view,
+                                   alpha_spinner=point_alpha_spinner,
+                                   toggle=alpha_toggle), code="""
             const d = src.data;
             const ts = d['ts'];
             const alpha_base = d['alpha_base'];
@@ -1353,13 +1387,16 @@ def create_app():
             
             const cut0 = Number(s.value[0]);
             const cut1 = Number(s.value[1]);
-            
+            const spinner_val_raw = alpha_spinner.value ?? 0.3;
+            const spinner_val = Math.max(Math.min(spinner_val_raw, 1.0), 0.01);
+            const base_alpha = toggle.active ? 1.0 : spinner_val;
+
             let visible_count = 0;
             for (let i = 0; i < ts.length; i++) {
-                let base = Number.isNaN(ts[i]) ? 0.0 : 
-                          (ts[i] >= cut0 && ts[i] <= cut1) ? 0.3 : 0;
+                let base = Number.isNaN(ts[i]) ? 0.0 :
+                          (ts[i] >= cut0 && ts[i] <= cut1) ? base_alpha : 0.0;
                 alpha_base[i] = base;
-                
+
                 // Final alpha depends on ALL filters
                 if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && season_on[i] && base > 0) {
                     alpha[i] = base;
@@ -1573,12 +1610,16 @@ def create_app():
         source.selected.js_on_change('indices', playlist_callback)
         
         # Alpha toggle callback - instant change
-        alpha_toggle_callback = CustomJS(args=dict(src=source, toggle=alpha_toggle), code="""
+        alpha_toggle_callback = CustomJS(args=dict(src=source, toggle=alpha_toggle,
+                                          alpha_spinner=point_alpha_spinner,
+                                          umap_view=umap_view, map_view=map_view), code="""
             const d = src.data;
             const alpha_base = d['alpha_base'];
             const alpha = d['alpha'];
-            const new_alpha = toggle.active ? 1.0 : 0.3;
-            
+            const spinner_val_raw = alpha_spinner.value ?? 0.3;
+            const spinner_val = Math.max(Math.min(spinner_val_raw, 1.0), 0.01);
+            const new_alpha = toggle.active ? 1.0 : spinner_val;
+
             // Update base alpha for all visible points
             for (let i = 0; i < alpha_base.length; i++) {
                 if (alpha_base[i] > 0) {
@@ -1589,10 +1630,55 @@ def create_app():
                     }
                 }
             }
-            
+
+            const booleans = Array.from(alpha, (value) => value > 0);
+            if (typeof umap_view !== 'undefined' && umap_view.filter) {
+                umap_view.filter.booleans = booleans.slice();
+            }
+            if (typeof map_view !== 'undefined' && map_view.filter) {
+                map_view.filter.booleans = booleans.slice();
+            }
             src.change.emit();
         """)
         alpha_toggle.js_on_change('active', alpha_toggle_callback)
+
+        point_alpha_spinner_callback = CustomJS(args=dict(
+            src=source,
+            spinner=point_alpha_spinner,
+            toggle=alpha_toggle,
+            umap_view=umap_view,
+            map_view=map_view,
+        ), code="""
+            if (toggle.active) {
+                return;
+            }
+
+            const d = src.data;
+            const alpha_base = d['alpha_base'];
+            const alpha = d['alpha'];
+            const spinner_val_raw = spinner.value ?? 0.3;
+            const spinner_val = Math.max(Math.min(spinner_val_raw, 1.0), 0.01);
+            const n = alpha_base.length;
+
+            for (let i = 0; i < n; i++) {
+                if (alpha_base[i] > 0) {
+                    alpha_base[i] = spinner_val;
+                    if (alpha[i] > 0) {
+                        alpha[i] = spinner_val;
+                    }
+                }
+            }
+
+            const booleans = Array.from(alpha, (value) => value > 0);
+            if (typeof umap_view !== 'undefined' && umap_view.filter) {
+                umap_view.filter.booleans = booleans.slice();
+            }
+            if (typeof map_view !== 'undefined' && map_view.filter) {
+                map_view.filter.booleans = booleans.slice();
+            }
+            src.change.emit();
+        """)
+        point_alpha_spinner.js_on_change('value', point_alpha_spinner_callback)
         
         # Zoom and reset callbacks
         # Define zoom functions inline in create_app scope
@@ -1654,7 +1740,10 @@ def create_app():
             state.is_zoomed = True
             
             # Update visualization
-            new_data, new_factors = prepare_hover_data(subset_meta, new_projection)
+            base_alpha = 1.0 if alpha_toggle.active else get_spinner_alpha()
+            new_data, new_factors = prepare_hover_data(
+                subset_meta, new_projection, point_alpha=base_alpha
+            )
             
             # Get new unique values             
             new_unique_seasons = sorted(set(new_data['season']))
@@ -1666,10 +1755,6 @@ def create_app():
             print(f"[ZOOM] New factors: {new_factors}")
             print(f"[ZOOM] New sex values: {new_unique_sex}")
             print(f"[ZOOM] New type values: {new_unique_type}")
-            
-            # All points start visible after zoom
-            new_data['alpha'] = [0.3] * len(new_data['x'])
-            new_data['alpha_base'] = [0.3] * len(new_data['x'])
             
             # Reset all filter states to True
             new_data['season_on'] = [True] * len(new_data['x'])
@@ -1734,7 +1819,10 @@ def create_app():
             )
             
             # Prepare full data with original factors
-            new_data, original_factors = prepare_hover_data(state.current_meta, state.projection)
+            base_alpha = 1.0 if alpha_toggle.active else get_spinner_alpha()
+            new_data, original_factors = prepare_hover_data(
+                state.current_meta, state.projection, point_alpha=base_alpha
+            )
             
             # Get unique values for the full dataset
             original_unique_seasons = sorted(set(new_data['season']))            
@@ -1943,7 +2031,13 @@ def create_app():
             styles={'border': '1px solid #ddd', 'padding': '10px', 'border-radius': '5px'}
         )
         
-        zoom_controls = row(zoom_button, reset_button, alpha_toggle, zoom_status)
+        zoom_controls = row(
+            zoom_button,
+            reset_button,
+            alpha_toggle,
+            point_alpha_spinner,
+            zoom_status,
+        )
         
         # Create a column that contains all filter widgets
         filter_widgets = column(season_checks, cluster_checks, hdbscan_checks, sex_checks, type_checks, time_range_slider)
