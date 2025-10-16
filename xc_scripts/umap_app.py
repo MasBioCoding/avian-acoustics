@@ -594,7 +594,7 @@ def prepare_hover_data(metadata, projection):
 # CREATE PLOTS
 # -----------------------------------------------------------------------------
 
-def create_umap_plot(source):
+def create_umap_plot(source, highlight_source):
     """Create the main UMAP scatter plot"""
     print("\n" + "-" * 40)
     print("CREATING UMAP PLOT...")
@@ -639,15 +639,21 @@ def create_umap_plot(source):
     view_filter = BooleanFilter(booleans=[a > 0 for a in source.data['alpha']])
     view = CDSView(filter=view_filter)
     
-    # Single scatter renderer using the view
     scatter = p.scatter('x', 'y', source=source, view=view,
                         size=point_size,
                         fill_color={'field':'active_color'}, 
                         line_color=None,
                         alpha='alpha',
-                        hover_line_color="black", 
-                        hover_alpha=1.0, 
+                        hover_line_color="black",
+                        hover_alpha=1.0,
                         hover_line_width=1.5)
+    
+    p.circle('x', 'y', source=highlight_source,
+             size=point_size + 6,
+             fill_color=None,
+             line_color='black',
+             line_width=3,
+             alpha=1.0)
         
     # Hover tool - will only work on visible points (alpha > 0)
     hover = HoverTool(
@@ -670,7 +676,7 @@ def create_umap_plot(source):
     print("  UMAP plot created")
     return p, hover, view
 
-def create_map_plot(source):
+def create_map_plot(source, highlight_source):
     """Create the geographic map plot"""
     print("\n" + "-" * 40)
     print("CREATING MAP PLOT...")
@@ -719,8 +725,15 @@ def create_map_plot(source):
                                  line_color=None, 
                                  alpha='alpha',
                                  hover_line_color="black",
-                                 hover_alpha=1.0, 
+                                 hover_alpha=1.0,
                                  hover_line_width=1.5)
+    
+    map_fig.circle('x3857', 'y3857', source=highlight_source,
+                   size=12,
+                   fill_color=None,
+                   line_color='black',
+                   line_width=3,
+                   alpha=1.0)
     
     # Store view reference
 
@@ -761,11 +774,17 @@ def create_app():
         # Prepare data
         data, factors = prepare_hover_data(metadata, projection)
         source = ColumnDataSource(data=data)
+        highlight_source = ColumnDataSource(data={
+            'x': [],
+            'y': [],
+            'x3857': [],
+            'y3857': []
+        })
         print(f"\nColumnDataSource created with {len(source.data['x'])} points")
         
         # Create plots - now they return season views
-        umap_plot, umap_hover, umap_view = create_umap_plot(source)
-        map_plot, map_hover, map_view = create_map_plot(source)
+        umap_plot, umap_hover, umap_view = create_umap_plot(source, highlight_source)
+        map_plot, map_hover, map_view = create_map_plot(source, highlight_source)
         
         # --- CREATE ALL WIDGETS ---
         print("\n" + "-" * 40)
@@ -1476,11 +1495,22 @@ def create_app():
             window._ctx = 'map';
         """))
         
-        playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel), code="""
+        playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel, highlight_src=highlight_source), code="""
             const d = src.data;
             const inds = src.selected.indices;
             if (!inds.length) return;
             const i = inds[0];
+            
+            const clearHighlight = () => {
+                highlight_src.data = {
+                    x: [],
+                    y: [],
+                    x3857: [],
+                    y3857: []
+                };
+                highlight_src.change.emit();
+            };
+            clearHighlight();
             
             // Check if the clicked point is visible
             if (d['alpha'][i] <= 0) {
@@ -1551,7 +1581,7 @@ def create_app():
                 const date = d['date'][j];
                 const url = d['audio_url'] ? d['audio_url'][j] : "";
                 
-                html += `<div style="display:flex;align-items:center;margin:4px 0;">
+                html += `<div class="playlist-item" data-index="${j}" style="display:flex;align-items:center;margin:4px 0;">
                     <button onclick="(function(u){
                         if(!u) return;
                         if(window._BN_audio) window._BN_audio.pause();
@@ -1567,6 +1597,46 @@ def create_app():
             
             html += '</div>';
             pane.text = html;
+            
+            const highlightIndex = (idx) => {
+                if (!Number.isFinite(idx)) {
+                    clearHighlight();
+                    return;
+                }
+                const newData = {
+                    x: [],
+                    y: [],
+                    x3857: [],
+                    y3857: []
+                };
+                const xVal = Number(d['x'][idx]);
+                const yVal = Number(d['y'][idx]);
+                if (Number.isFinite(xVal) && Number.isFinite(yVal)) {
+                    newData.x.push(xVal);
+                    newData.y.push(yVal);
+                }
+                const mxVal = Number(d['x3857'][idx]);
+                const myVal = Number(d['y3857'][idx]);
+                if (Number.isFinite(mxVal) && Number.isFinite(myVal)) {
+                    newData.x3857.push(mxVal);
+                    newData.y3857.push(myVal);
+                }
+                highlight_src.data = newData;
+                highlight_src.change.emit();
+            };
+            setTimeout(() => {
+                const container = document.getElementById(pane.id);
+                if (!container) {
+                    return;
+                }
+                const entries = container.querySelectorAll('.playlist-item');
+                entries.forEach((entry) => {
+                    const idx = Number(entry.dataset.index);
+                    entry.addEventListener('mouseenter', () => highlightIndex(idx));
+                    entry.addEventListener('mouseleave', () => clearHighlight());
+                    entry.addEventListener('click', () => highlightIndex(idx));
+                });
+            }, 0);
         """)
         source.selected.js_on_change('indices', playlist_callback)
         
@@ -1684,6 +1754,12 @@ def create_app():
             
             # When we zoom, and we recreate widgets, should this source data be changed before their creation? Does this currently happen?
             source.data = new_data
+            highlight_source.data = {
+                'x': [],
+                'y': [],
+                'x3857': [],
+                'y3857': []
+            }
             
             # Update filter widgets with new unique values and reset to all active
             season_checks.labels = new_unique_seasons
@@ -1756,6 +1832,12 @@ def create_app():
             
             # same comment as in zoom_to_visible
             source.data = new_data
+            highlight_source.data = {
+                'x': [],
+                'y': [],
+                'x3857': [],
+                'y3857': []
+            }
             
             # Reset filter widgets with original values and set all active
             season_checks.labels = original_unique_seasons
