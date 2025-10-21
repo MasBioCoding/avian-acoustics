@@ -91,6 +91,7 @@ SELECTION_PALETTE = [
     "#7CFC00",  # Lawn green
 ]
 SELECTION_UNASSIGNED_COLOR = "#bdbdbd"
+MIN_SELECTION_GROUP_SIZE = 10
 
 print("=" * 80)
 print("STARTING BOKEH SERVER APP")
@@ -893,11 +894,18 @@ def create_app():
             text=(
                 "<b>Selection groups:</b> use the box or lasso selection tools on either plot "
                 "to create a group. Each completed selection adds another group. Use the "
-                "checkboxes to toggle visibility."
+                "checkboxes to toggle visibility. Selections smaller than "
+                f"{MIN_SELECTION_GROUP_SIZE} visible points are ignored."
             ),
             width=300,
             visible=False,
             styles={'font-size': '11px', 'color': '#444'}
+        )
+        selection_status_div = Div(
+            text="",
+            width=300,
+            visible=False,
+            styles={'font-size': '11px', 'color': '#666'}
         )
         selection_checks = CheckboxGroup(
             labels=["Unassigned (0)"],
@@ -1091,6 +1099,9 @@ def create_app():
             is_selection_mode = color_select.value == "Selection"
             selection_checks.visible = is_selection_mode
             selection_help_div.visible = is_selection_mode
+            if not is_selection_mode:
+                selection_status_div.text = ""
+            selection_status_div.visible = is_selection_mode
             has_assigned = any(group_id != -1 for group_id in assignments)
             selection_clear_btn.visible = is_selection_mode and has_assigned
 
@@ -1104,6 +1115,7 @@ def create_app():
             current['selection_group'] = [-1] * total
             current['selection_color'] = [SELECTION_UNASSIGNED_COLOR for _ in range(total)]
             current['selection_on'] = [True] * total
+            selection_status_div.text = ""
             alpha_base = list(current.get('alpha_base', []))
             alpha_values = list(current.get('alpha', []))
             cluster_on = current.get('cluster_on', [True] * total)
@@ -1147,6 +1159,13 @@ def create_app():
             ]
             if not visible_selected:
                 return
+            if len(visible_selected) < MIN_SELECTION_GROUP_SIZE:
+                selection_status_div.text = (
+                    f"<i>Selection ignored: need at least {MIN_SELECTION_GROUP_SIZE} visible "
+                    f"points (found {len(visible_selected)}).</i>"
+                )
+                source.selected.indices = []
+                return
 
             group_id = next_selection_id
             next_selection_id += 1
@@ -1176,6 +1195,9 @@ def create_app():
                 updated['active_color'] = list(colors)
 
             source.data = updated
+            selection_status_div.text = (
+                f"Created selection group with {len(visible_selected)} visible points."
+            )
             source.selected.indices = []
             update_selection_widgets()
 
@@ -1565,7 +1587,8 @@ def create_app():
             time_slider=time_range_slider,
             selection_checks=selection_checks,
             selection_help=selection_help_div,
-            selection_clear=selection_clear_btn
+            selection_clear=selection_clear_btn,
+            selection_status=selection_status_div
         ), code="""
             const d = src.data;
             const mode = sel.value;
@@ -1580,6 +1603,8 @@ def create_app():
             selection_checks.visible = false;
             selection_help.visible = false;
             selection_clear.visible = false;
+            selection_status.visible = false;
+            selection_status.text = "";
 
             // Map mode to color column and show appropriate widget
             let from_col;
@@ -1617,6 +1642,7 @@ def create_app():
                     from_col = "selection_color";
                     selection_checks.visible = true;
                     selection_help.visible = true;
+                    selection_status.visible = true;
                     let hasGroups = false;
                     const selectionAssignments = d['selection_group'];
                     for (let i = 0; i < selectionAssignments.length; i++) {
@@ -2382,6 +2408,7 @@ def create_app():
         # Create a column that contains all filter widgets
         filter_widgets = column(
             selection_help_div,
+            selection_status_div,
             selection_checks,
             selection_clear_btn,
             season_checks,
