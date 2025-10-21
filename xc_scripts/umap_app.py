@@ -68,12 +68,27 @@ from bokeh.models import (
     TapTool, Toggle, Select, CheckboxGroup, CustomJS, RangeSlider, CDSView, BooleanFilter,
     Spinner
 )
+from bokeh.events import SelectionGeometry
 from bokeh.plotting import figure
 import hdbscan
 
 SELECTION_PALETTE = [
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+    "#4477AA",  # Blue
+    "#EE6677",  # Red
+    "#228833",  # Green
+    "#CCBB44",  # Yellow
+    "#66CCEE",  # Cyan
+    "#AA3377",  # Magenta
+    "#BBBBBB",  # Gray
+    "#000000",  # Black
+    "#FFA500",  # Orange
+    "#00CED1",  # Dark turquoise
+    "#6A5ACD",  # Slate blue
+    "#D2691E",  # Chocolate
+    "#FF1493",  # Deep pink
+    "#40E0D0",  # Turquoise
+    "#FFD700",  # Gold
+    "#7CFC00",  # Lawn green
 ]
 SELECTION_UNASSIGNED_COLOR = "#bdbdbd"
 
@@ -876,8 +891,9 @@ def create_app():
 
         selection_help_div = Div(
             text=(
-                "<b>Selection groups:</b> draw with the selection tools to create a group. "
-                "Each new selection adds another group. Use the checkboxes to toggle visibility."
+                "<b>Selection groups:</b> use the box or lasso selection tools on either plot "
+                "to create a group. Each completed selection adds another group. Use the "
+                "checkboxes to toggle visibility."
             ),
             width=300,
             visible=False,
@@ -1022,6 +1038,15 @@ def create_app():
 
         selection_groups: list[dict[str, int | str]] = []
         next_selection_id = 0
+        selection_event_pending = False
+
+        def pick_group_color() -> str:
+            """Return a high-contrast color that is not already in use."""
+            used_colors = {str(group['color']).lower() for group in selection_groups}
+            for color in SELECTION_PALETTE:
+                if color.lower() not in used_colors:
+                    return color
+            return SELECTION_PALETTE[next_selection_id % len(SELECTION_PALETTE)]
 
         def update_selection_widgets() -> None:
             nonlocal selection_groups
@@ -1106,22 +1131,26 @@ def create_app():
             source.selected.indices = []
             update_selection_widgets()
 
-        def handle_selection(attr: str, old: list[int], new: list[int]) -> None:
+        def create_selection_group(selected_indices: list[int]) -> None:
             nonlocal selection_groups, next_selection_id
             """Create a new selection group using the currently visible selection."""
             if color_select.value != "Selection":
                 return
-            if not new:
+            if not selected_indices:
                 return
 
             alpha_values = source.data.get('alpha', [])
-            visible_selected = [idx for idx in new if idx < len(alpha_values) and alpha_values[idx] > 0]
+            visible_selected = [
+                idx
+                for idx in selected_indices
+                if 0 <= idx < len(alpha_values) and alpha_values[idx] > 0
+            ]
             if not visible_selected:
                 return
 
             group_id = next_selection_id
             next_selection_id += 1
-            group_color = SELECTION_PALETTE[group_id % len(SELECTION_PALETTE)]
+            group_color = pick_group_color()
 
             assignments = list(source.data.get('selection_group', []))
             colors = list(source.data.get('selection_color', []))
@@ -1150,9 +1179,28 @@ def create_app():
             source.selected.indices = []
             update_selection_widgets()
 
+        def process_pending_selection() -> None:
+            nonlocal selection_event_pending
+            try:
+                create_selection_group(list(source.selected.indices))
+            finally:
+                selection_event_pending = False
+
+        def on_selection_geometry(event: SelectionGeometry) -> None:
+            nonlocal selection_event_pending
+            if color_select.value != "Selection":
+                return
+            if not getattr(event, 'final', True):
+                return
+            if selection_event_pending:
+                return
+            selection_event_pending = True
+            curdoc().add_next_tick_callback(process_pending_selection)
+
         update_selection_widgets()
         selection_clear_btn.on_click(clear_selection_groups)
-        source.selected.on_change('indices', handle_selection)
+        umap_plot.on_event(SelectionGeometry, on_selection_geometry)
+        map_plot.on_event(SelectionGeometry, on_selection_geometry)
 
         print("  All widgets created")
         
