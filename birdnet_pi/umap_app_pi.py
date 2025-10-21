@@ -1421,11 +1421,11 @@ def create_app():
         
         # Playlist callback
         umap_plot.js_on_event('tap', CustomJS(args=dict(src=source), code="""
-            src.data._ctx = 'umap';
+            window._ctx = 'umap';
         """))
         
         map_plot.js_on_event('tap', CustomJS(args=dict(src=source), code="""
-            src.data._ctx = 'map';
+            window._ctx = 'map';
         """))
         
         playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel), code="""
@@ -1454,7 +1454,7 @@ def create_app():
                 return 2 * R * Math.asin(Math.sqrt(a));
             }
             
-            const ctx = d._ctx || 'umap';
+            const ctx = window._ctx || 'umap';
             const N = d['species'].length;
             const items = [];
             let centerInfo = "";
