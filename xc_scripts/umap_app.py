@@ -68,7 +68,6 @@ from bokeh.models import (
     TapTool, Toggle, Select, CheckboxGroup, CustomJS, RangeSlider, CDSView, BooleanFilter,
     Spinner
 )
-from bokeh.events import SelectionGeometry
 from bokeh.plotting import figure
 import hdbscan
 
@@ -91,7 +90,6 @@ SELECTION_PALETTE = [
     "#7CFC00",  # Lawn green
 ]
 SELECTION_UNASSIGNED_COLOR = "#bdbdbd"
-MIN_SELECTION_GROUP_SIZE = 10
 
 print("=" * 80)
 print("STARTING BOKEH SERVER APP")
@@ -954,19 +952,25 @@ def create_app():
         selection_help_div = Div(
             text=(
                 "<b>Selection groups:</b> use the box or lasso selection tools on either plot "
-                "to create a group. Each completed selection adds another group. Use the "
-                "checkboxes to toggle visibility. Selections smaller than "
-                f"{MIN_SELECTION_GROUP_SIZE} visible points are ignored."
+                "to highlight points, then click <i>Create group from selection</i> to save them. "
+                "Use the checkboxes to toggle visibility of saved groups."
             ),
             width=300,
             visible=False,
             styles={'font-size': '11px', 'color': '#444'}
         )
         selection_status_div = Div(
-            text="",
+            text="<i>No active selection.</i>",
             width=300,
             visible=False,
             styles={'font-size': '11px', 'color': '#666'}
+        )
+        selection_create_btn = Button(
+            label="Create group from selection",
+            button_type="primary",
+            width=220,
+            visible=False,
+            disabled=True,
         )
         selection_checks = CheckboxGroup(
             labels=["Unassigned (0)"],
@@ -1107,7 +1111,7 @@ def create_app():
 
         selection_groups: list[dict[str, int | str]] = []
         next_selection_id = 0
-        selection_event_pending = False
+        suppress_selection_status_update = False
 
         def pick_group_color() -> str:
             """Return a high-contrast color that is not already in use."""
@@ -1162,6 +1166,11 @@ def create_app():
             selection_help_div.visible = is_selection_mode
             if not is_selection_mode:
                 selection_status_div.text = ""
+            elif not selection_status_div.text:
+                selection_status_div.text = "<i>No active selection.</i>"
+            selection_create_btn.visible = is_selection_mode
+            if not is_selection_mode:
+                selection_create_btn.disabled = True
             selection_status_div.visible = is_selection_mode
             has_assigned = any(group_id != -1 for group_id in assignments)
             selection_clear_btn.visible = is_selection_mode and has_assigned
@@ -1176,7 +1185,8 @@ def create_app():
             current['selection_group'] = [-1] * total
             current['selection_color'] = [SELECTION_UNASSIGNED_COLOR for _ in range(total)]
             current['selection_on'] = [True] * total
-            selection_status_div.text = ""
+            selection_status_div.text = "<i>No active selection.</i>"
+            selection_create_btn.disabled = True
             alpha_base = list(current.get('alpha_base', []))
             alpha_values = list(current.get('alpha', []))
             cluster_on = current.get('cluster_on', [True] * total)
@@ -1205,11 +1215,13 @@ def create_app():
             update_selection_widgets()
 
         def create_selection_group(selected_indices: list[int]) -> None:
-            nonlocal selection_groups, next_selection_id
+            nonlocal selection_groups, next_selection_id, suppress_selection_status_update
             """Create a new selection group using the currently visible selection."""
             if color_select.value != "Selection":
                 return
             if not selected_indices:
+                selection_status_div.text = "<i>No points selected.</i>"
+                selection_create_btn.disabled = True
                 return
 
             alpha_values = source.data.get('alpha', [])
@@ -1219,13 +1231,10 @@ def create_app():
                 if 0 <= idx < len(alpha_values) and alpha_values[idx] > 0
             ]
             if not visible_selected:
-                return
-            if len(visible_selected) < MIN_SELECTION_GROUP_SIZE:
                 selection_status_div.text = (
-                    f"<i>Selection ignored: need at least {MIN_SELECTION_GROUP_SIZE} visible "
-                    f"points (found {len(visible_selected)}).</i>"
+                    "<i>Selection contains no visible points; adjust filters.</i>"
                 )
-                source.selected.indices = []
+                selection_create_btn.disabled = True
                 return
 
             group_id = next_selection_id
@@ -1259,31 +1268,51 @@ def create_app():
             selection_status_div.text = (
                 f"Created selection group with {len(visible_selected)} visible points."
             )
+            selection_create_btn.disabled = True
+            suppress_selection_status_update = True
             source.selected.indices = []
             update_selection_widgets()
 
-        def process_pending_selection() -> None:
-            nonlocal selection_event_pending
-            try:
-                create_selection_group(list(source.selected.indices))
-            finally:
-                selection_event_pending = False
+        def handle_selection_change(attr: str, old: list[int], new: list[int]) -> None:
+            nonlocal suppress_selection_status_update
+            if suppress_selection_status_update and not new:
+                suppress_selection_status_update = False
+                selection_create_btn.disabled = True
+                return
+            suppress_selection_status_update = False
+            is_selection_mode = color_select.value == "Selection"
+            selection_create_btn.visible = is_selection_mode
+            if not is_selection_mode:
+                selection_create_btn.disabled = True
+                return
 
-        def on_selection_geometry(event: SelectionGeometry) -> None:
-            nonlocal selection_event_pending
-            if color_select.value != "Selection":
-                return
-            if not getattr(event, 'final', True):
-                return
-            if selection_event_pending:
-                return
-            selection_event_pending = True
-            curdoc().add_next_tick_callback(process_pending_selection)
+            alpha_values = source.data.get('alpha', [])
+            visible_selected = [
+                idx
+                for idx in new
+                if 0 <= idx < len(alpha_values) and alpha_values[idx] > 0
+            ]
+            selection_create_btn.disabled = len(visible_selected) == 0
+
+            if visible_selected:
+                count = len(visible_selected)
+                plural = "s" if count != 1 else ""
+                selection_status_div.text = (
+                    f"Selected {count} visible point{plural}. Click \"Create group from selection\" to save."
+                )
+            elif new:
+                selection_status_div.text = "<i>Selection contains no visible points; adjust filters.</i>"
+            else:
+                selection_status_div.text = "<i>No active selection.</i>"
 
         update_selection_widgets()
         selection_clear_btn.on_click(clear_selection_groups)
-        umap_plot.on_event(SelectionGeometry, on_selection_geometry)
-        map_plot.on_event(SelectionGeometry, on_selection_geometry)
+        source.selected.on_change('indices', handle_selection_change)
+        def on_create_selection() -> None:
+            """Persist the current selection as a group when requested by the user."""
+            create_selection_group(list(source.selected.indices))
+
+        selection_create_btn.on_click(on_create_selection)
 
         print("  All widgets created")
         
@@ -1649,7 +1678,8 @@ def create_app():
             selection_checks=selection_checks,
             selection_help=selection_help_div,
             selection_clear=selection_clear_btn,
-            selection_status=selection_status_div
+            selection_status=selection_status_div,
+            selection_create=selection_create_btn
         ), code="""
             const d = src.data;
             const mode = sel.value;
@@ -1666,6 +1696,8 @@ def create_app():
             selection_clear.visible = false;
             selection_status.visible = false;
             selection_status.text = "";
+            selection_create.visible = false;
+            selection_create.disabled = true;
 
             // Map mode to color column and show appropriate widget
             let from_col;
@@ -1707,6 +1739,20 @@ def create_app():
                     selection_checks.visible = true;
                     selection_help.visible = true;
                     selection_status.visible = true;
+                    selection_create.visible = true;
+                    let hasVisibleSelection = false;
+                    const selected = src.selected.indices ?? [];
+                    const alpha = d['alpha'] || [];
+                    for (const idx of selected) {
+                        if (Number.isInteger(idx) && idx >= 0 && idx < alpha.length && alpha[idx] > 0) {
+                            hasVisibleSelection = true;
+                            break;
+                        }
+                    }
+                    selection_create.disabled = !hasVisibleSelection;
+                    if (!hasVisibleSelection && selected.length === 0) {
+                        selection_status.text = "<i>No active selection.</i>";
+                    }
                     let hasGroups = false;
                     const selectionAssignments = d['selection_group'];
                     for (let i = 0; i < selectionAssignments.length; i++) {
@@ -2473,6 +2519,7 @@ def create_app():
         filter_widgets = column(
             selection_help_div,
             selection_status_div,
+            selection_create_btn,
             selection_checks,
             selection_clear_btn,
             season_checks,
