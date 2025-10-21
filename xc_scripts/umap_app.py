@@ -58,6 +58,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 import traceback
 import colorsys
+from collections import Counter
 
 from bokeh.io import curdoc
 from bokeh.layouts import column, row
@@ -69,6 +70,26 @@ from bokeh.models import (
 )
 from bokeh.plotting import figure
 import hdbscan
+
+SELECTION_PALETTE = [
+    "#4477AA",  # Blue
+    "#EE6677",  # Red
+    "#228833",  # Green
+    "#CCBB44",  # Yellow
+    "#66CCEE",  # Cyan
+    "#AA3377",  # Magenta
+    "#BBBBBB",  # Gray
+    "#000000",  # Black
+    "#FFA500",  # Orange
+    "#00CED1",  # Dark turquoise
+    "#6A5ACD",  # Slate blue
+    "#D2691E",  # Chocolate
+    "#FF1493",  # Deep pink
+    "#40E0D0",  # Turquoise
+    "#FFD700",  # Gold
+    "#7CFC00",  # Lawn green
+]
+SELECTION_UNASSIGNED_COLOR = "#bdbdbd"
 
 print("=" * 80)
 print("STARTING BOKEH SERVER APP")
@@ -648,6 +669,9 @@ def prepare_hover_data(
             'type_color': type_colors,
             'time_color': time_colors,
             'lat_color': latitude_colors,
+            'selection_group': [-1] * len(metadata),
+            'selection_color': [SELECTION_UNASSIGNED_COLOR] * len(metadata),
+            'selection_on': [True] * len(metadata),
             'active_color': season_colors,  # Start with season colors
             'alpha': alpha.tolist(),
             'alpha_base': alpha.tolist(),
@@ -924,7 +948,43 @@ def create_app():
             visible=False,  # Hidden by default
             name="type_checks"
         )
-        
+
+        selection_help_div = Div(
+            text=(
+                "<b>Selection groups:</b> use the box or lasso selection tools on either plot "
+                "to highlight points, then click <i>Create group from selection</i> to save them. "
+                "Use the checkboxes to toggle visibility of saved groups."
+            ),
+            width=300,
+            visible=False,
+            styles={'font-size': '11px', 'color': '#444'}
+        )
+        selection_status_div = Div(
+            text="<i>No active selection.</i>",
+            width=300,
+            visible=False,
+            styles={'font-size': '11px', 'color': '#666'}
+        )
+        selection_create_btn = Button(
+            label="Create group from selection",
+            button_type="primary",
+            width=220,
+            visible=False,
+            disabled=True,
+        )
+        selection_checks = CheckboxGroup(
+            labels=["Unassigned (0)"],
+            active=[0],
+            visible=False,
+            name="selection_checks"
+        )
+        selection_clear_btn = Button(
+            label="Clear selection groups",
+            button_type="default",
+            width=200,
+            visible=False
+        )
+
         # Time range slider (0-24 hours) (no check for len(unique times), necessary?( tested and does indeed cause the same bug, maybe fix later))
         time_range_slider = RangeSlider(
             start=0, end=24, value=(0, 24), step=0.5,
@@ -937,7 +997,7 @@ def create_app():
         color_select = Select(
             title="Color by",
             value="Season",
-            options=["Season", "KMeans", "HDBSCAN", "Sex", "Type", "Time of Day", "Latitude"]
+            options=["Season", "KMeans", "HDBSCAN", "Sex", "Type", "Time of Day", "Latitude", "Selection"]
         )
         
         # --- SLIDERS ---
@@ -1048,7 +1108,212 @@ def create_app():
             visible=False,
             name="hdbscan_checks"
         )
-        
+
+        selection_groups: list[dict[str, int | str]] = []
+        next_selection_id = 0
+        suppress_selection_status_update = False
+
+        def pick_group_color() -> str:
+            """Return a high-contrast color that is not already in use."""
+            used_colors = {str(group['color']).lower() for group in selection_groups}
+            for color in SELECTION_PALETTE:
+                if color.lower() not in used_colors:
+                    return color
+            return SELECTION_PALETTE[next_selection_id % len(SELECTION_PALETTE)]
+
+        def update_selection_widgets() -> None:
+            nonlocal selection_groups
+            """Update widget labels, visibility, and active states for selections."""
+            data_dict = source.data
+            assignments = data_dict.get('selection_group', [])
+            selection_flags = data_dict.get('selection_on', [])
+            counts = Counter(assignments)
+
+            selection_groups = [
+                group for group in selection_groups
+                if counts.get(int(group['id']), 0) > 0
+            ]
+
+            labels: list[str] = []
+            tags: list[int] = []
+            active_indices: list[int] = []
+
+            def group_is_active(group_id: int) -> bool:
+                return any(
+                    assignments[idx] == group_id and selection_flags[idx]
+                    for idx in range(len(assignments))
+                )
+
+            unassigned_count = counts.get(-1, 0)
+            labels.append(f"Unassigned ({unassigned_count})")
+            tags.append(-1)
+            if group_is_active(-1) or (not selection_groups and unassigned_count > 0):
+                active_indices.append(0)
+
+            for display_index, group in enumerate(selection_groups, start=1):
+                group_id = int(group['id'])
+                count = counts.get(group_id, 0)
+                labels.append(f"Group {display_index} ({count})")
+                tags.append(group_id)
+                if group_is_active(group_id):
+                    active_indices.append(display_index)
+
+            selection_checks.labels = labels
+            selection_checks.tags = tags
+            selection_checks.active = sorted(set(active_indices))
+            is_selection_mode = color_select.value == "Selection"
+            selection_checks.visible = is_selection_mode
+            selection_help_div.visible = is_selection_mode
+            if not is_selection_mode:
+                selection_status_div.text = ""
+            elif not selection_status_div.text:
+                selection_status_div.text = "<i>No active selection.</i>"
+            selection_create_btn.visible = is_selection_mode
+            if not is_selection_mode:
+                selection_create_btn.disabled = True
+            selection_status_div.visible = is_selection_mode
+            has_assigned = any(group_id != -1 for group_id in assignments)
+            selection_clear_btn.visible = is_selection_mode and has_assigned
+
+        def clear_selection_groups() -> None:
+            nonlocal selection_groups, next_selection_id
+            """Clear all selection groups and restore base colors and visibility."""
+            selection_groups = []
+            next_selection_id = 0
+            current = dict(source.data)
+            total = len(current.get('selection_group', []))
+            current['selection_group'] = [-1] * total
+            current['selection_color'] = [SELECTION_UNASSIGNED_COLOR for _ in range(total)]
+            current['selection_on'] = [True] * total
+            selection_status_div.text = "<i>No active selection.</i>"
+            selection_create_btn.disabled = True
+            alpha_base = list(current.get('alpha_base', []))
+            alpha_values = list(current.get('alpha', []))
+            cluster_on = current.get('cluster_on', [True] * total)
+            hdbscan_on = current.get('hdbscan_on', [True] * total)
+            sex_on = current.get('sex_on', [True] * total)
+            type_on = current.get('type_on', [True] * total)
+            time_on = current.get('time_on', [True] * total)
+            season_on = current.get('season_on', [True] * total)
+            for idx in range(total):
+                if idx < len(alpha_values):
+                    if (cluster_on[idx] and hdbscan_on[idx] and sex_on[idx] and type_on[idx]
+                            and time_on[idx] and season_on[idx]):
+                        alpha_values[idx] = alpha_base[idx] if idx < len(alpha_base) else 0.0
+                    else:
+                        alpha_values[idx] = 0.0
+            current['alpha'] = alpha_values
+            visibility_flags = [value > 0 for value in alpha_values]
+            if hasattr(umap_view, 'filter') and umap_view.filter is not None:
+                umap_view.filter.booleans = list(visibility_flags)
+            if hasattr(map_view, 'filter') and map_view.filter is not None:
+                map_view.filter.booleans = list(visibility_flags)
+            if color_select.value == "Selection":
+                current['active_color'] = list(current['selection_color'])
+            source.data = current
+            source.selected.indices = []
+            update_selection_widgets()
+
+        def create_selection_group(selected_indices: list[int]) -> None:
+            nonlocal selection_groups, next_selection_id, suppress_selection_status_update
+            """Create a new selection group using the currently visible selection."""
+            if color_select.value != "Selection":
+                return
+            if not selected_indices:
+                selection_status_div.text = "<i>No points selected.</i>"
+                selection_create_btn.disabled = True
+                return
+
+            alpha_values = source.data.get('alpha', [])
+            visible_selected = [
+                idx
+                for idx in selected_indices
+                if 0 <= idx < len(alpha_values) and alpha_values[idx] > 0
+            ]
+            if not visible_selected:
+                selection_status_div.text = (
+                    "<i>Selection contains no visible points; adjust filters.</i>"
+                )
+                selection_create_btn.disabled = True
+                return
+
+            group_id = next_selection_id
+            next_selection_id += 1
+            group_color = pick_group_color()
+
+            assignments = list(source.data.get('selection_group', []))
+            colors = list(source.data.get('selection_color', []))
+            selection_flags = list(source.data.get('selection_on', []))
+
+            for idx in visible_selected:
+                if idx < len(assignments):
+                    assignments[idx] = group_id
+                    colors[idx] = group_color
+                    selection_flags[idx] = True
+
+            for idx, gid in enumerate(assignments):
+                if gid == -1:
+                    colors[idx] = SELECTION_UNASSIGNED_COLOR
+
+            selection_groups.append({'id': group_id, 'color': group_color})
+
+            updated = dict(source.data)
+            updated['selection_group'] = assignments
+            updated['selection_color'] = colors
+            updated['selection_on'] = selection_flags
+            if color_select.value == "Selection":
+                updated['active_color'] = list(colors)
+
+            source.data = updated
+            selection_status_div.text = (
+                f"Created selection group with {len(visible_selected)} visible points."
+            )
+            selection_create_btn.disabled = True
+            suppress_selection_status_update = True
+            source.selected.indices = []
+            update_selection_widgets()
+
+        def handle_selection_change(attr: str, old: list[int], new: list[int]) -> None:
+            nonlocal suppress_selection_status_update
+            if suppress_selection_status_update and not new:
+                suppress_selection_status_update = False
+                selection_create_btn.disabled = True
+                return
+            suppress_selection_status_update = False
+            is_selection_mode = color_select.value == "Selection"
+            selection_create_btn.visible = is_selection_mode
+            if not is_selection_mode:
+                selection_create_btn.disabled = True
+                return
+
+            alpha_values = source.data.get('alpha', [])
+            visible_selected = [
+                idx
+                for idx in new
+                if 0 <= idx < len(alpha_values) and alpha_values[idx] > 0
+            ]
+            selection_create_btn.disabled = len(visible_selected) == 0
+
+            if visible_selected:
+                count = len(visible_selected)
+                plural = "s" if count != 1 else ""
+                selection_status_div.text = (
+                    f"Selected {count} visible point{plural}. Click \"Create group from selection\" to save."
+                )
+            elif new:
+                selection_status_div.text = "<i>Selection contains no visible points; adjust filters.</i>"
+            else:
+                selection_status_div.text = "<i>No active selection.</i>"
+
+        update_selection_widgets()
+        selection_clear_btn.on_click(clear_selection_groups)
+        source.selected.on_change('indices', handle_selection_change)
+        def on_create_selection() -> None:
+            """Persist the current selection as a group when requested by the user."""
+            create_selection_group(list(source.selected.indices))
+
+        selection_create_btn.on_click(on_create_selection)
+
         print("  All widgets created")
         
         # --- SETUP CALLBACKS ---
@@ -1079,13 +1344,14 @@ def create_app():
             const sex_on = d['sex_on'] || new Array(season.length).fill(true);
             const type_on = d['type_on'] || new Array(season.length).fill(true);
             const time_on = d['time_on'] || new Array(season.length).fill(true);
-            
+            const selection_on = d['selection_on'] || new Array(season.length).fill(true);
+
             const n = season.length;
             for (let i = 0; i < n; i++) {
                 const season_visible = active.has(String(season[i]));
                 d['season_on'][i] = season_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && season_visible) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && selection_on[i] && season_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -1134,13 +1400,14 @@ def create_app():
             const type_on = d['type_on'] || new Array(km.length).fill(true);
             const time_on = d['time_on'] || new Array(km.length).fill(true);
             const season_on = d['season_on'] || new Array(km.length).fill(true);
-            
+            const selection_on = d['selection_on'] || new Array(km.length).fill(true);
+
             const n = km.length;
             for (let i = 0; i < n; i++) {
                 const cluster_visible = active.has(String(km[i]));
                 d['cluster_on'][i] = cluster_visible;
 
-                if (cluster_visible && hdbscan_on[i] && season_on[i] && sex_on[i] && type_on[i] && time_on[i]) {
+                if (cluster_visible && hdbscan_on[i] && season_on[i] && sex_on[i] && type_on[i] && time_on[i] && selection_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -1189,14 +1456,15 @@ def create_app():
             const type_on = d['type_on'] || new Array(sex.length).fill(true);
             const time_on = d['time_on'] || new Array(sex.length).fill(true);
             const season_on = d['season_on'] || new Array(sex.length).fill(true);
+            const selection_on = d['selection_on'] || new Array(sex.length).fill(true);
 
-            
+
             const n = sex.length;
             for (let i = 0; i < n; i++) {
                 const sex_visible = active.has(String(sex[i]));
                 d['sex_on'][i] = sex_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_visible && type_on[i] && time_on[i] && season_on[i]) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_visible && type_on[i] && time_on[i] && season_on[i] && selection_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -1245,13 +1513,14 @@ def create_app():
             const sex_on = d['sex_on'] || new Array(type.length).fill(true);
             const time_on = d['time_on'] || new Array(type.length).fill(true);
             const season_on = d['season_on'] || new Array(type.length).fill(true);
+            const selection_on = d['selection_on'] || new Array(type.length).fill(true);
 
             const n = type.length;
             for (let i = 0; i < n; i++) {
                 const type_visible = active.has(String(type[i]));
                 d['type_on'][i] = type_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_visible && time_on[i] && season_on[i]) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_visible && time_on[i] && season_on[i] && selection_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -1291,6 +1560,7 @@ def create_app():
             const sex_on = d['sex_on'] || new Array(time_hour.length).fill(true);
             const type_on = d['type_on'] || new Array(time_hour.length).fill(true);
             const season_on = d['season_on'] || new Array(time_hour.length).fill(true);
+            const selection_on = d['selection_on'] || new Array(time_hour.length).fill(true);
 
             const min_hour = slider.value[0];
             const max_hour = slider.value[1];
@@ -1303,7 +1573,7 @@ def create_app():
                 d['time_on'][i] = time_visible;
                 
                 // Alpha is visible only if ALL filters allow it
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_visible && season_on[i]) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_visible && season_on[i] && selection_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -1328,20 +1598,92 @@ def create_app():
             src.change.emit();
         """)
         time_range_slider.js_on_change('value', time_range_callback)
+
+        selection_callback = CustomJS(args=dict(
+            src=source,
+            cb=selection_checks,
+            umap_view=umap_view,
+            map_view=map_view,
+            clear_btn=selection_clear_btn,
+            sel=color_select
+        ), code="""
+            const d = src.data;
+            const assignments = d['selection_group'];
+            const alpha_base = d['alpha_base'];
+            const alpha = d['alpha'];
+            const selection_on = d['selection_on'] || new Array(assignments.length).fill(true);
+            const tags = cb.tags || [];
+            const active_indices = new Set(cb.active);
+            const active_groups = new Set();
+            for (let i = 0; i < tags.length; i++) {
+                if (active_indices.has(i)) {
+                    active_groups.add(tags[i]);
+                }
+            }
+
+            const cluster_on = d['cluster_on'] || new Array(assignments.length).fill(true);
+            const hdbscan_on = d['hdbscan_on'] || new Array(assignments.length).fill(true);
+            const sex_on = d['sex_on'] || new Array(assignments.length).fill(true);
+            const type_on = d['type_on'] || new Array(assignments.length).fill(true);
+            const time_on = d['time_on'] || new Array(assignments.length).fill(true);
+            const season_on = d['season_on'] || new Array(assignments.length).fill(true);
+
+            const n = assignments.length;
+            let hasAssigned = false;
+            for (let i = 0; i < n; i++) {
+                const group_id = assignments[i];
+                if (group_id !== -1) {
+                    hasAssigned = true;
+                }
+                const selection_visible = active_groups.has(group_id);
+                selection_on[i] = selection_visible;
+                if (selection_visible && cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                    time_on[i] && season_on[i] && alpha_base[i] > 0) {
+                    alpha[i] = alpha_base[i];
+                } else {
+                    alpha[i] = 0.0;
+                }
+            }
+
+            if (typeof umap_view !== 'undefined' && umap_view.filter) {
+                const new_booleans = [];
+                for (let i = 0; i < n; i++) {
+                    new_booleans.push(alpha[i] > 0);
+                }
+                umap_view.filter.booleans = new_booleans;
+            }
+            if (typeof map_view !== 'undefined' && map_view.filter) {
+                const new_booleans = [];
+                for (let i = 0; i < n; i++) {
+                    new_booleans.push(alpha[i] > 0);
+                }
+                map_view.filter.booleans = new_booleans;
+            }
+
+            clear_btn.visible = hasAssigned && sel.value === "Selection";
+            d['selection_on'] = selection_on;
+            src.change.emit();
+        """)
+        selection_checks.js_on_change('active', selection_callback)
         
         color_callback = CustomJS(args=dict(
-            src=source, 
+            src=source,
             sel=color_select,
             season_checks=season_checks,
             cluster_checks=cluster_checks,
             hdbscan_checks=hdbscan_checks,  # Add this
             sex_checks=sex_checks,
             type_checks=type_checks,
-            time_slider=time_range_slider
+            time_slider=time_range_slider,
+            selection_checks=selection_checks,
+            selection_help=selection_help_div,
+            selection_clear=selection_clear_btn,
+            selection_status=selection_status_div,
+            selection_create=selection_create_btn
         ), code="""
             const d = src.data;
             const mode = sel.value;
-            
+
             // Hide all filter widgets first
             season_checks.visible = false;
             cluster_checks.visible = false;
@@ -1349,7 +1691,14 @@ def create_app():
             sex_checks.visible = false;
             type_checks.visible = false;
             time_slider.visible = false;
-            
+            selection_checks.visible = false;
+            selection_help.visible = false;
+            selection_clear.visible = false;
+            selection_status.visible = false;
+            selection_status.text = "";
+            selection_create.visible = false;
+            selection_create.disabled = true;
+
             // Map mode to color column and show appropriate widget
             let from_col;
             switch(mode) {
@@ -1384,6 +1733,35 @@ def create_app():
                     break;
                 case "Latitude":
                     from_col = "lat_color";
+                    break;
+                case "Selection":
+                    from_col = "selection_color";
+                    selection_checks.visible = true;
+                    selection_help.visible = true;
+                    selection_status.visible = true;
+                    selection_create.visible = true;
+                    let hasVisibleSelection = false;
+                    const selected = src.selected.indices ?? [];
+                    const alpha = d['alpha'] || [];
+                    for (const idx of selected) {
+                        if (Number.isInteger(idx) && idx >= 0 && idx < alpha.length && alpha[idx] > 0) {
+                            hasVisibleSelection = true;
+                            break;
+                        }
+                    }
+                    selection_create.disabled = !hasVisibleSelection;
+                    if (!hasVisibleSelection && selected.length === 0) {
+                        selection_status.text = "<i>No active selection.</i>";
+                    }
+                    let hasGroups = false;
+                    const selectionAssignments = d['selection_group'];
+                    for (let i = 0; i < selectionAssignments.length; i++) {
+                        if (selectionAssignments[i] !== -1) {
+                            hasGroups = true;
+                            break;
+                        }
+                    }
+                    selection_clear.visible = hasGroups;
                     break;
             }
             
@@ -1473,6 +1851,7 @@ def create_app():
             const type_on = d['type_on'] || new Array(ts.length).fill(true);
             const time_on = d['time_on'] || new Array(ts.length).fill(true);
             const season_on = d['season_on'] || new Array(ts.length).fill(true);
+            const selection_on = d['selection_on'] || new Array(ts.length).fill(true);
             
             const cut0 = Number(s.value[0]);
             const cut1 = Number(s.value[1]);
@@ -1487,7 +1866,7 @@ def create_app():
                 alpha_base[i] = base;
 
                 // Final alpha depends on ALL filters
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && season_on[i] && base > 0) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && season_on[i] && selection_on[i] && base > 0) {
                     alpha[i] = base;
                 } else {
                     alpha[i] = 0.0;
@@ -1865,6 +2244,7 @@ def create_app():
             
             # When we zoom, and we recreate widgets, should this source data be changed before their creation? Does this currently happen?
             source.data = new_data
+            clear_selection_groups()
             
             # Update filter widgets with new unique values and reset to all active
             season_checks.labels = new_unique_seasons
@@ -1940,6 +2320,7 @@ def create_app():
             
             # same comment as in zoom_to_visible
             source.data = new_data
+            clear_selection_groups()
             
             # Reset filter widgets with original values and set all active
             season_checks.labels = original_unique_seasons
@@ -2065,14 +2446,15 @@ def create_app():
             const sex_on = d['sex_on'] || new Array(hdbscan.length).fill(true);
             const type_on = d['type_on'] || new Array(hdbscan.length).fill(true);
             const time_on = d['time_on'] || new Array(hdbscan.length).fill(true);
-            
+            const selection_on = d['selection_on'] || new Array(hdbscan.length).fill(true);
+
             const n = hdbscan.length;
             for (let i = 0; i < n; i++) {
                 const hdbscan_visible = active.has(String(hdbscan[i]));
                 d['hdbscan_on'][i] = hdbscan_visible;
-                
-                if (season_on[i] && cluster_on[i] && sex_on[i] && type_on[i] && 
-                    time_on[i] && hdbscan_visible) {
+
+                if (season_on[i] && cluster_on[i] && sex_on[i] && type_on[i] &&
+                    time_on[i] && selection_on[i] && hdbscan_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2134,7 +2516,19 @@ def create_app():
         )
         
         # Create a column that contains all filter widgets
-        filter_widgets = column(season_checks, cluster_checks, hdbscan_checks, sex_checks, type_checks, time_range_slider)
+        filter_widgets = column(
+            selection_help_div,
+            selection_status_div,
+            selection_create_btn,
+            selection_checks,
+            selection_clear_btn,
+            season_checks,
+            cluster_checks,
+            hdbscan_checks,
+            sex_checks,
+            type_checks,
+            time_range_slider
+        )
         controls = row(color_select, filter_widgets, hover_toggle, test_audio_btn, umap_params_box, hdbscan_params_box)
         
         plots = row(umap_plot, map_plot, playlist_panel)
