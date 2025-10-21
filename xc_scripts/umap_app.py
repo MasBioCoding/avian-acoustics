@@ -247,6 +247,63 @@ def time_to_color(time_str):
     except:
         return "#808080"  # Gray for any error
 
+def _hex_to_rgb(color: str) -> Tuple[int, int, int]:
+    """Convert hex color to an RGB tuple."""
+
+    color = color.lstrip('#')
+    return tuple(int(color[i:i+2], 16) for i in range(0, 6, 2))
+
+
+def _rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
+    """Convert an RGB tuple to a hex color string."""
+
+    return '#{:02x}{:02x}{:02x}'.format(*rgb)
+
+
+def _interpolate_color(start_color: str, end_color: str, fraction: float) -> str:
+    """Linearly interpolate between two hex colors."""
+
+    start_rgb = _hex_to_rgb(start_color)
+    end_rgb = _hex_to_rgb(end_color)
+    interpolated = tuple(
+        int(round(s + (e - s) * fraction)) for s, e in zip(start_rgb, end_rgb)
+    )
+    return _rgb_to_hex(interpolated)
+
+
+def latitude_to_colors(latitudes: pd.Series) -> list[str]:
+    """Return gradient colors (yellow→green→blue) based on latitude values."""
+
+    numeric_lat = pd.to_numeric(latitudes, errors='coerce')
+    valid = numeric_lat.notna()
+
+    if not valid.any():
+        return ["#999999"] * len(latitudes)
+
+    min_lat = float(numeric_lat[valid].min())
+    max_lat = float(numeric_lat[valid].max())
+
+    if np.isclose(max_lat, min_lat):
+        normalized = pd.Series([0.5] * len(latitudes))
+    else:
+        normalized = (numeric_lat - min_lat) / (max_lat - min_lat)
+
+    colors: list[str] = []
+    for value, is_valid in zip(normalized, valid):
+        if not is_valid:
+            colors.append("#999999")
+            continue
+
+        val = float(np.clip(value, 0.0, 1.0))
+        if val <= 0.5:
+            local_fraction = val / 0.5 if val > 0 else 0.0
+            colors.append(_interpolate_color('#ffff00', '#00ff00', local_fraction))
+        else:
+            local_fraction = (val - 0.5) / 0.5
+            colors.append(_interpolate_color('#00ff00', '#0000ff', local_fraction))
+
+    return colors
+
 def update_stats_display(metadata, stats_div, zoom_level, date_slider=None, source=None):
     """Update the statistics display with UMAP and selection info"""
     dates = pd.to_datetime(metadata['date'], errors='coerce')
@@ -536,6 +593,9 @@ def prepare_hover_data(
         
         # Time of day colors (continuous gradient)
         time_colors = [time_to_color(t) for t in metadata['time']]
+
+        # Latitude gradient colors (yellow -> green -> blue)
+        latitude_colors = latitude_to_colors(metadata['lat'])
         
         # Parse time to hours for filtering
         time_hours = []
@@ -587,6 +647,7 @@ def prepare_hover_data(
             'sex_color': sex_colors,
             'type_color': type_colors,
             'time_color': time_colors,
+            'lat_color': latitude_colors,
             'active_color': season_colors,  # Start with season colors
             'alpha': alpha.tolist(),
             'alpha_base': alpha.tolist(),
@@ -874,9 +935,9 @@ def create_app():
         
         # Color selector - expanded options
         color_select = Select(
-            title="Color by", 
-            value="Season", 
-            options=["Season", "KMeans", "HDBSCAN", "Sex", "Type", "Time of Day"]
+            title="Color by",
+            value="Season",
+            options=["Season", "KMeans", "HDBSCAN", "Sex", "Type", "Time of Day", "Latitude"]
         )
         
         # --- SLIDERS ---
@@ -1320,6 +1381,9 @@ def create_app():
                 case "Time of Day":
                     from_col = "time_color";
                     time_slider.visible = true;
+                    break;
+                case "Latitude":
+                    from_col = "lat_color";
                     break;
             }
             
