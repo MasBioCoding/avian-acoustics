@@ -1,9 +1,5 @@
-#!/usr/bin/env python
 """
-UMAP Yellowhammer Visualization with Interactive Zoom
-Bokeh Server Application - COMPLETE VERSION
-
-Interactive plots expose box, lasso, and polygon selection tools for filtering points.
+Bokeh application for UMAP visualization of bird audio embeddings.
 
 To run:
 1. Save this file as 'xc_scripts/umap_app.py'
