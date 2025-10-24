@@ -46,6 +46,7 @@ To run:
 """
 
 import argparse
+import base64
 import sys
 import yaml
 from pathlib import Path
@@ -125,6 +126,10 @@ def load_config(config_path: Optional[Path] = None):
             "kmeans_n_init": 10,
             "point_size": 10,
             "point_alpha": 0.3
+        },
+        "spectrograms": {
+            "base_url": None,
+            "image_format": "png"
         }
     }
     
@@ -164,6 +169,16 @@ EMBEDDINGS_FILE = ROOT_PATH / "embeddings" / SPECIES_SLUG / "embeddings.csv"
 METADATA_FILE = ROOT_PATH / "embeddings" / SPECIES_SLUG / "metadata.csv"
 CLIPS_DIR = ROOT_PATH / "clips" / SPECIES_SLUG
 AUDIO_BASE_URL = config.get("audio", {}).get("base_url", "http://localhost:8765")
+_spectro_cfg = config.get("spectrograms", {})
+SPECTROGRAM_IMAGE_FORMAT = str(_spectro_cfg.get("image_format", "png")).lower()
+_spectro_base = _spectro_cfg.get("base_url")
+SPECTROGRAM_BASE_URL = _spectro_base.rstrip("/") if _spectro_base else None
+SPECTROGRAMS_DIR = ROOT_PATH / "spectrograms" / SPECIES_SLUG
+_spectro_inline_flag = _spectro_cfg.get("inline")
+if _spectro_inline_flag is None:
+    INLINE_SPECTROGRAMS = _spectro_base is None
+else:
+    INLINE_SPECTROGRAMS = bool(_spectro_inline_flag)
 
 # UMAP parameters from config
 ANALYSIS_PARAMS = config.get("analysis", {})
@@ -174,6 +189,13 @@ print(f"  Embeddings: {EMBEDDINGS_FILE}")
 print(f"  Metadata: {METADATA_FILE}")
 print(f"  Clips: {CLIPS_DIR}")
 print(f"  Audio URL: {AUDIO_BASE_URL}")
+print(f"  Spectrograms: {SPECTROGRAMS_DIR}")
+if SPECTROGRAM_BASE_URL:
+    print(f"  Spectrogram base URL: {SPECTROGRAM_BASE_URL}")
+else:
+    print("  Spectrogram base URL: <none>")
+print(f"  Spectrogram inline delivery: {'enabled' if INLINE_SPECTROGRAMS else 'disabled'}")
+print(f"  Spectrogram image format: .{SPECTROGRAM_IMAGE_FORMAT}")
 print(f"  Analysis parameters:")
 print(f"    UMAP neighbors: {ANALYSIS_PARAMS.get('umap_n_neighbors', 10)}")
 print(f"    UMAP min_dist: {ANALYSIS_PARAMS.get('umap_min_dist', 0.0)}")
@@ -427,6 +449,72 @@ def load_data():
             metadata['audio_url'] = metadata['clip_file'].apply(
                 lambda f: f"{AUDIO_BASE_URL}/{Path(f).name}"
             )
+
+        # Resolve spectrogram URLs if images exist on disk
+        def _clip_basename(row: pd.Series) -> str:
+            try:
+                if 'clip_file' in metadata.columns and pd.notna(row['clip_file']):
+                    return Path(row['clip_file']).stem
+                clip_index = int(row['clip_index'])
+            except Exception:
+                clip_index = int(row.get('clip_index', 0))
+            return f"{SPECIES_SLUG}_{row['xcid']}_{clip_index:02d}"
+
+        spectrogram_urls: list[str] = []
+        spectrogram_exists: list[bool] = []
+        spectrogram_data_uri: list[str] = []
+        missing_count = 0
+        inline_attempts = 0
+        inline_failures = 0
+
+        def _inline_spectrogram(path: Path) -> str:
+            """Return a base64 data URI for the spectrogram image."""
+            nonlocal inline_failures
+            try:
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                return f"data:image/{SPECTROGRAM_IMAGE_FORMAT};base64,{encoded}"
+            except FileNotFoundError:
+                return ""
+            except Exception as exc:
+                inline_failures += 1
+                print(f"  Warning: failed to inline {path.name}: {exc}")
+                return ""
+
+        for _, meta_row in metadata.iterrows():
+            base_name = _clip_basename(meta_row)
+            filename = f"{base_name}.{SPECTROGRAM_IMAGE_FORMAT}"
+            image_path = SPECTROGRAMS_DIR / filename
+            if image_path.exists():
+                url = (
+                    f"{SPECTROGRAM_BASE_URL}/{filename}"
+                    if SPECTROGRAM_BASE_URL
+                    else ""
+                )
+                spectrogram_urls.append(url)
+                spectrogram_exists.append(True)
+                if INLINE_SPECTROGRAMS:
+                    inline_attempts += 1
+                    spectrogram_data_uri.append(_inline_spectrogram(image_path))
+                else:
+                    spectrogram_data_uri.append("")
+            else:
+                spectrogram_urls.append("")
+                spectrogram_exists.append(False)
+                missing_count += 1
+                spectrogram_data_uri.append("")
+
+        metadata['spectrogram_url'] = spectrogram_urls
+        metadata['spectrogram_exists'] = spectrogram_exists
+        metadata['spectrogram_data_uri'] = spectrogram_data_uri
+        print(
+            f"  Spectrogram availability: {len(metadata) - missing_count}/{len(metadata)} "
+            f"(directory {SPECTROGRAMS_DIR})"
+        )
+        if INLINE_SPECTROGRAMS:
+            print(
+                f"  Spectrogram inline payloads: {inline_attempts - inline_failures}/"
+                f"{inline_attempts} embedded"
+            )
         
         # Store in state
         state.original_embeddings = embeddings_array
@@ -661,6 +749,9 @@ def prepare_hover_data(
             'kmeans3_str': metadata['kmeans3_str'].tolist(),
             'hdbscan_on': [True] * len(metadata),
             'audio_url': metadata['audio_url'].tolist() if 'audio_url' in metadata else [''] * len(metadata),
+            'spectrogram_url': metadata['spectrogram_url'].tolist() if 'spectrogram_url' in metadata else [''] * len(metadata),
+            'spectrogram_exists': metadata['spectrogram_exists'].tolist() if 'spectrogram_exists' in metadata else [False] * len(metadata),
+            'spectrogram_data_uri': metadata['spectrogram_data_uri'].tolist() if 'spectrogram_data_uri' in metadata else [''] * len(metadata),
             'season': season_arr.tolist(),
             'season_on': season_on,
             'season_color': season_colors,
@@ -2056,23 +2147,32 @@ def create_app():
                 const xcid = d['xcid'][j];
                 const date = d['date'][j];
                 const url = d['audio_url'] ? d['audio_url'][j] : "";
+                const spectro = d['spectrogram_url'] ? d['spectrogram_url'][j] : "";
+                const spectroInline = d['spectrogram_data_uri'] ? d['spectrogram_data_uri'][j] : "";
+                const spectroSrc = spectroInline || spectro;
+                const spectroHtml = spectroSrc
+                    ? `<img src="${spectroSrc}" alt="Spectrogram for ${xcid}" style="max-width:160px; border:1px solid #ccc; border-radius:4px;">`
+                    : `<div style="color:#888;"><small>No spectrogram</small></div>`;
                 
                 // Each recording row becomes sensitive to mouse enter/leave events.
                 // When hovering over a playlist item, draw an outline around the corresponding point
                 // in both the UMAP and map plots by updating the hl_alpha and hl_width fields.
-                html += `<div style="display:flex;align-items:center;margin:4px 0;"
+                html += `<div style="margin:4px 0; padding:4px 0; border-bottom:1px solid #eee;"
                     onmouseenter="var src = Bokeh.documents[0].get_model_by_name('source'); var d = src.data; if(window._hl_idx != null){ d['hl_alpha'][window._hl_idx] = 0; d['hl_width'][window._hl_idx] = 0; } window._hl_idx = ${j}; d['hl_alpha'][${j}] = 1; d['hl_width'][${j}] = 3; src.change.emit();"
                     onmouseleave="var src = Bokeh.documents[0].get_model_by_name('source'); var d = src.data; if(window._hl_idx != null){ d['hl_alpha'][window._hl_idx] = 0; d['hl_width'][window._hl_idx] = 0; src.change.emit(); window._hl_idx = null; }"
                 >
-                    <button onclick="(function(u){
-                        if(!u) return;
-                        if(window._BN_audio) window._BN_audio.pause();
-                        window._BN_audio = new Audio(u);
-                        window._BN_audio.play();
-                    })('${url}')">Play</button>
-                    <div style="margin-left:8px">
-                        <b>${xcid}</b><br>
-                        <small>${date}</small>
+                    <div style="display:flex; align-items:flex-start; gap:10px;">
+                        <button onclick="(function(u){
+                            if(!u) return;
+                            if(window._BN_audio) window._BN_audio.pause();
+                            window._BN_audio = new Audio(u);
+                            window._BN_audio.play();
+                        })('${url}')">Play</button>
+                        <div style="min-width:120px;">
+                            <b>${xcid}</b><br>
+                            <small>${date}</small>
+                        </div>
+                        ${spectroHtml}
                     </div>
                 </div>`;
             }
