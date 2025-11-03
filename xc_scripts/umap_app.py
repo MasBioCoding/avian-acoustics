@@ -41,10 +41,13 @@ To run:
 
 import argparse
 import base64
+import errno
 import sys
 import yaml
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from importlib_metadata import metadata
 import pandas as pd
 import numpy as np
@@ -97,6 +100,8 @@ print("=" * 80)
 print("STARTING BOKEH SERVER APP")
 print("=" * 80)
 
+_STATIC_HTTP_SERVERS: dict[str, dict[str, Any]] = {}
+
 # -----------------------------------------------------------------------------
 # CONFIGURATION
 # -----------------------------------------------------------------------------
@@ -116,8 +121,10 @@ def load_config(config_path: Optional[Path] = None):
             "root": "/Volumes/Z Slim/zslim_birdcluster"
         },
         "audio": {
-            "base_url": "http://localhost:8765",
-            "port": 8765
+            "auto_serve": True,
+            "host": "127.0.0.1",
+            "port": 8765,
+            "base_url": None
         },
         "analysis": {
             "umap_n_neighbors": 10,
@@ -129,8 +136,12 @@ def load_config(config_path: Optional[Path] = None):
             "point_alpha": 0.3
         },
         "spectrograms": {
+            "auto_serve": True,
+            "host": "127.0.0.1",
+            "port": 8766,
             "base_url": None,
-            "image_format": "png"
+            "image_format": "png",
+            "inline": None
         }
     }
     
@@ -155,6 +166,86 @@ def load_config(config_path: Optional[Path] = None):
     
     return default_config
 
+def start_static_file_server(
+    *,
+    label: str,
+    directory: Path,
+    host: str,
+    port: int,
+    log_requests: bool = False,
+) -> Optional[tuple[str, bool]]:
+    """Start or reuse a background HTTP server to expose local files.
+
+    Returns:
+        A tuple of (base_url, started_now) if a usable server is available, or None.
+    """
+
+    existing = _STATIC_HTTP_SERVERS.get(label)
+    if existing:
+        return existing["base_url"], existing["started"]
+
+    if not directory.exists():
+        print(f"  {label} directory missing, cannot auto-serve: {directory}")
+        return None
+
+    class _StaticHandler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(directory), **kwargs)
+
+        def log_message(self, format: str, *args) -> None:  # type: ignore[override]
+            if log_requests:
+                super().log_message(format, *args)
+
+    url_host = "localhost" if host in ("0.0.0.0", "") else host
+    base_url = f"http://{url_host}:{port}"
+
+    try:
+        server = ThreadingHTTPServer((host, port), _StaticHandler)
+        server.daemon_threads = True
+        server.allow_reuse_address = True
+    except OSError as exc:
+        reuse_codes = {
+            getattr(errno, "EADDRINUSE", None),
+            getattr(errno, "WSAEADDRINUSE", None),
+            48,  # macOS
+            98,  # Linux
+            10048,  # Windows
+        }
+        if exc.errno in reuse_codes:
+            print(f"  {label} server already active on {host}:{port}; reusing {base_url}")
+            _STATIC_HTTP_SERVERS[label] = {
+                "server": None,
+                "thread": None,
+                "host": host,
+                "port": port,
+                "directory": directory,
+                "base_url": base_url,
+                "started": False,
+            }
+            return base_url, False
+
+        print(f"  ERROR: Could not start {label.lower()} server on {host}:{port} ({exc})")
+        return None
+
+    thread = Thread(
+        target=server.serve_forever,
+        name=f"{label.replace(' ', '')}HTTPServer",
+        daemon=True,
+    )
+    thread.start()
+
+    print(f"  {label} server started at {base_url} serving {directory}")
+    _STATIC_HTTP_SERVERS[label] = {
+        "server": server,
+        "thread": thread,
+        "host": host,
+        "port": port,
+        "directory": directory,
+        "base_url": base_url,
+        "started": True,
+    }
+    return base_url, True
+
 # Parse command line arguments to get config file
 parser = argparse.ArgumentParser(description="UMAP Visualization App")
 parser.add_argument("--config", type=Path, help="Path to config.yaml file")
@@ -169,15 +260,74 @@ SPECIES_SLUG = config["species"]["slug"]
 EMBEDDINGS_FILE = ROOT_PATH / "embeddings" / SPECIES_SLUG / "embeddings.csv"
 METADATA_FILE = ROOT_PATH / "embeddings" / SPECIES_SLUG / "metadata.csv"
 CLIPS_DIR = ROOT_PATH / "clips" / SPECIES_SLUG
-AUDIO_BASE_URL = config.get("audio", {}).get("base_url", "http://localhost:8765")
-_spectro_cfg = config.get("spectrograms", {})
+_audio_cfg = config.get("audio", {}) or {}
+_audio_base = _audio_cfg.get("base_url")
+AUDIO_BASE_URL = (
+    str(_audio_base).rstrip("/")
+    if isinstance(_audio_base, str) and _audio_base
+    else None
+)
+AUDIO_HOST = str(_audio_cfg.get("host", "127.0.0.1")).strip() or "127.0.0.1"
+AUDIO_PORT = int(_audio_cfg.get("port", 8765))
+AUDIO_AUTO_SERVE_REQUESTED = bool(_audio_cfg.get("auto_serve", True))
+AUDIO_SERVER_STARTED = False
+AUDIO_SERVER_REUSED = False
+
+if AUDIO_AUTO_SERVE_REQUESTED:
+    generated_audio_url = start_static_file_server(
+        label=f"Audio ({SPECIES_SLUG})",
+        directory=CLIPS_DIR,
+        host=AUDIO_HOST,
+        port=AUDIO_PORT,
+        log_requests=bool(_audio_cfg.get("log_requests", False)),
+    )
+    if generated_audio_url:
+        audio_base, audio_started_now = generated_audio_url
+        if audio_started_now:
+            AUDIO_SERVER_STARTED = True
+        else:
+            AUDIO_SERVER_REUSED = True
+        if AUDIO_BASE_URL is None:
+            AUDIO_BASE_URL = audio_base.rstrip("/")
+
+_spectro_cfg = config.get("spectrograms", {}) or {}
 SPECTROGRAM_IMAGE_FORMAT = str(_spectro_cfg.get("image_format", "png")).lower()
-_spectro_base = _spectro_cfg.get("base_url")
-SPECTROGRAM_BASE_URL = _spectro_base.rstrip("/") if _spectro_base else None
 SPECTROGRAMS_DIR = ROOT_PATH / "spectrograms" / SPECIES_SLUG
 _spectro_inline_flag = _spectro_cfg.get("inline")
+_spectro_base = _spectro_cfg.get("base_url")
+SPECTROGRAM_BASE_URL = (
+    _spectro_base.rstrip("/") if isinstance(_spectro_base, str) and _spectro_base else None
+)
+SPECTROGRAM_HOST = str(_spectro_cfg.get("host", "127.0.0.1")).strip() or "127.0.0.1"
+SPECTROGRAM_PORT = int(_spectro_cfg.get("port", 8766))
+SPECTROGRAM_AUTO_SERVE_REQUESTED = bool(_spectro_cfg.get("auto_serve", True))
+SPECTROGRAM_SERVER_STARTED = False
+SPECTROGRAM_SERVER_REUSED = False
+
+if _spectro_inline_flag is True:
+    SPECTROGRAM_AUTO_SERVE_REQUESTED = False
+
+if SPECTROGRAM_BASE_URL is None and SPECTROGRAM_AUTO_SERVE_REQUESTED:
+    generated_url = start_static_file_server(
+        label=f"Spectrogram ({SPECIES_SLUG})",
+        directory=SPECTROGRAMS_DIR,
+        host=SPECTROGRAM_HOST,
+        port=SPECTROGRAM_PORT,
+        log_requests=bool(_spectro_cfg.get("log_requests", False)),
+    )
+    if generated_url:
+        spectro_base, spectro_started_now = generated_url
+        if spectro_started_now:
+            SPECTROGRAM_SERVER_STARTED = True
+            SPECTROGRAM_BASE_URL = spectro_base.rstrip("/")
+        else:
+            SPECTROGRAM_SERVER_REUSED = True
+            SPECTROGRAM_BASE_URL = spectro_base.rstrip("/")
+    else:
+        _spectro_inline_flag = True  # Fallback if server failed
+
 if _spectro_inline_flag is None:
-    INLINE_SPECTROGRAMS = _spectro_base is None
+    INLINE_SPECTROGRAMS = SPECTROGRAM_BASE_URL is None
 else:
     INLINE_SPECTROGRAMS = bool(_spectro_inline_flag)
 
@@ -189,12 +339,33 @@ print(f"  Species: {config['species']['scientific_name']} ({config['species']['c
 print(f"  Embeddings: {EMBEDDINGS_FILE}")
 print(f"  Metadata: {METADATA_FILE}")
 print(f"  Clips: {CLIPS_DIR}")
-print(f"  Audio URL: {AUDIO_BASE_URL}")
+if AUDIO_BASE_URL:
+    print(f"  Audio base URL: {AUDIO_BASE_URL}")
+else:
+    print("  Audio base URL: <none>")
 print(f"  Spectrograms: {SPECTROGRAMS_DIR}")
 if SPECTROGRAM_BASE_URL:
     print(f"  Spectrogram base URL: {SPECTROGRAM_BASE_URL}")
 else:
     print("  Spectrogram base URL: <none>")
+if AUDIO_SERVER_STARTED:
+    print(f"  Audio server: auto-started on {AUDIO_HOST}:{AUDIO_PORT}")
+elif AUDIO_SERVER_REUSED:
+    print(f"  Audio server: reusing existing service on {AUDIO_HOST}:{AUDIO_PORT}")
+elif AUDIO_AUTO_SERVE_REQUESTED and AUDIO_BASE_URL:
+    print("  Audio server: supplied base URL in use (auto-start unavailable)")
+elif AUDIO_AUTO_SERVE_REQUESTED:
+    print("  Audio server: requested but not running (see messages above)")
+else:
+    print("  Audio server: disabled")
+if SPECTROGRAM_SERVER_STARTED:
+    print(f"  Spectrogram server: auto-started on {SPECTROGRAM_HOST}:{SPECTROGRAM_PORT}")
+elif SPECTROGRAM_SERVER_REUSED:
+    print(f"  Spectrogram server: reusing existing service on {SPECTROGRAM_HOST}:{SPECTROGRAM_PORT}")
+elif SPECTROGRAM_AUTO_SERVE_REQUESTED:
+    print("  Spectrogram server: requested but not running (see messages above)")
+else:
+    print("  Spectrogram server: disabled")
 print(f"  Spectrogram inline delivery: {'enabled' if INLINE_SPECTROGRAMS else 'disabled'}")
 print(f"  Spectrogram image format: .{SPECTROGRAM_IMAGE_FORMAT}")
 print(f"  Analysis parameters:")
@@ -458,17 +629,20 @@ def load_data():
         print(f"  Metadata shape: {metadata.shape}")
         
         # Add audio URLs based on clip filenames
-        if 'clip_file' not in metadata.columns:
-            # If no clip_file column, create from xcid and clip_index
-            metadata['audio_url'] = metadata.apply(
-                lambda row: f"{AUDIO_BASE_URL}/{SPECIES_SLUG}_{row['xcid']}_{row['clip_index']:02d}.wav",
-                axis=1
-            )
+        if AUDIO_BASE_URL:
+            if 'clip_file' not in metadata.columns:
+                # If no clip_file column, create from xcid and clip_index
+                metadata['audio_url'] = metadata.apply(
+                    lambda row: f"{AUDIO_BASE_URL}/{SPECIES_SLUG}_{row['xcid']}_{row['clip_index']:02d}.wav",
+                    axis=1
+                )
+            else:
+                # Use the actual filename from clip_file
+                metadata['audio_url'] = metadata['clip_file'].apply(
+                    lambda f: f"{AUDIO_BASE_URL}/{Path(f).name}"
+                )
         else:
-            # Use the actual filename from clip_file
-            metadata['audio_url'] = metadata['clip_file'].apply(
-                lambda f: f"{AUDIO_BASE_URL}/{Path(f).name}"
-            )
+            metadata['audio_url'] = [''] * len(metadata)
 
         # Resolve spectrogram URLs if images exist on disk
         def _clip_basename(row: pd.Series) -> str:
