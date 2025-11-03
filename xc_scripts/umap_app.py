@@ -3,40 +3,11 @@ Bokeh application for UMAP visualization of bird audio embeddings.
 
 To run:
 1. Save this file as 'xc_scripts/umap_app.py'
-2. Start audio server in separate terminal:
-    cd "/path/to/clips/<species_slug>"
-    for me:
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/sylvia_atricapilla"
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/turdus_merula"
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/corvus_corax"
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_montanus"
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/passer_domesticus"
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/parus_major"
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/buteo_buteo"
-    cd "/Volumes/Z Slim/zslim_birdcluster/clips/fringilla_coelebs"
-    python3 -m http.server 8765
-3. Run the Bokeh app:
+2. Run the Bokeh app:
     cd /path/to/birdnet_data_pipeline
     for me: cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_limosa_limosa.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_emberiza_citrinella.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_fringilla_coelebs.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_sylvia_atricapilla.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_turdus_merula.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_parus_major.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_corvus_corax.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_passer_montanus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_passer_domesticus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_chloris_chloris.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_strix_aluco.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_asio_otus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_curruca_communis.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_cettia_cetti.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_phylloscopus_collybita.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_phylloscopus_trochilus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_acrocephalus_scirpaceus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_buteo_buteo.yaml
-    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config.yaml
+    bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_limosa_limosa.yaml
+    bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_chloris_chloris.yaml
 """
 
 import argparse

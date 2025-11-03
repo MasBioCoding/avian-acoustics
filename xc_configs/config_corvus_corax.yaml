@@ -44,5 +44,15 @@ analysis:
   point_alpha: 0.3          # Transparency of points (0.0-1.0)
 
 audio:
-  base_url: "http://localhost:8765"  # Base URL for audio server
-  port: 8765                          # Port for local audio server
+  auto_serve: true                   # Start lightweight HTTP server for clips
+  host: "127.0.0.1"                  # Bind address for audio server
+  port: 8765                         # Port for local audio server
+  base_url: null                     # Override to use an existing server instead
+
+spectrograms:
+  auto_serve: true                   # Start a lightweight HTTP server from the app
+  host: "127.0.0.1"                  # Bind address for serving spectrogram PNGs
+  port: 8766                         # Port for spectrogram server
+  base_url: null                     # Override to use an existing server instead
+  image_format: "png"                # Spectrogram file extension
+  inline: false                      # Use HTTP delivery rather than embedding base64
