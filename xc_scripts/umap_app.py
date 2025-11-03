@@ -18,27 +18,25 @@ To run:
 3. Run the Bokeh app:
     cd /path/to/birdnet_data_pipeline
     for me: cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_limosa_limosa.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_emberiza_citrinella.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_fringilla_coelebs.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_sylvia_atricapilla.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_turdus_merula.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_parus_major.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_corvus_corax.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_montanus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_passer_domesticus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_chloris_chloris.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_strix_aluco.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_asio_otus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_curruca_communis.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_cettia_cetti.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_collybita.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_phylloscopus_trochilus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_acrocephalus_scirpaceus.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config_buteo_buteo.yaml
-    bokeh serve --show xc_scripts/umap_app.py --args --config xc_configs/config.yaml
-    Or without config (uses defaults):
-    bokeh serve --show xc_scripts/umap_app.py
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_limosa_limosa.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_emberiza_citrinella.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_fringilla_coelebs.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_sylvia_atricapilla.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_turdus_merula.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_parus_major.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_corvus_corax.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_passer_montanus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_passer_domesticus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_chloris_chloris.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_strix_aluco.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_asio_otus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_curruca_communis.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_cettia_cetti.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_phylloscopus_collybita.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_phylloscopus_trochilus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_acrocephalus_scirpaceus.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config_buteo_buteo.yaml
+    bokeh serve --show xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --args --config xc_configs/config.yaml
 """
 
 import argparse
