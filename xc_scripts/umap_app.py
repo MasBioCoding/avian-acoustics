@@ -51,7 +51,7 @@ from importlib_metadata import metadata
 import pandas as pd
 import numpy as np
 import umap
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN
 from sklearn.metrics import silhouette_score
 import traceback
 import colorsys
@@ -63,7 +63,7 @@ from bokeh.models import (
     ColumnDataSource, Button, Div, DateRangeSlider, HoverTool, BoxSelectTool,
     LassoSelectTool, PolySelectTool,
     TapTool, Toggle, Select, CheckboxGroup, CustomJS, RangeSlider, CDSView, BooleanFilter,
-    Spinner
+    Spinner, Arrow, NormalHead, Range1d
 )
 from bokeh.plotting import figure
 import hdbscan
@@ -87,6 +87,13 @@ SELECTION_PALETTE = [
     "#7CFC00",  # Lawn green
 ]
 SELECTION_UNASSIGNED_COLOR = "#bdbdbd"
+
+EARTH_RADIUS_KM = 6371.0088
+GEOSHIFT_MAX_RECORDINGS_PER_CLUSTER = 3
+GEOSHIFT_CLUSTER_DIAMETER_KM = 2.0
+GEOSHIFT_CLUSTER_RADIUS_KM = GEOSHIFT_CLUSTER_DIAMETER_KM / 2.0
+GEOSHIFT_NORTH_COLOR = "#1f78b4"
+GEOSHIFT_SOUTH_COLOR = "#d62728"
 
 print("=" * 80)
 print("STARTING BOKEH SERVER APP")
@@ -308,6 +315,25 @@ def _interpolate_color(start_color: str, end_color: str, fraction: float) -> str
         int(round(s + (e - s) * fraction)) for s, e in zip(start_rgb, end_rgb)
     )
     return _rgb_to_hex(interpolated)
+
+
+def lonlat_to_web_mercator(lon_values, lat_values):
+    """Convert longitude/latitude pairs to Web Mercator coordinates."""
+    lon_series = pd.Series(lon_values)
+    lat_series = pd.Series(lat_values)
+    lon_arr = pd.to_numeric(lon_series, errors='coerce').to_numpy(dtype=float)
+    lat_arr = pd.to_numeric(lat_series, errors='coerce').to_numpy(dtype=float)
+    valid = np.isfinite(lon_arr) & np.isfinite(lat_arr)
+
+    x = np.full(lon_arr.shape, np.nan, dtype=float)
+    y = np.full(lat_arr.shape, np.nan, dtype=float)
+    if valid.any():
+        k = 6378137.0
+        lon_rad = np.deg2rad(lon_arr[valid])
+        lat_rad = np.deg2rad(lat_arr[valid])
+        x[valid] = k * lon_rad
+        y[valid] = k * np.log(np.tan((np.pi / 4.0) + (lat_rad / 2.0)))
+    return x, y
 
 
 def latitude_to_colors(latitudes: pd.Series) -> list[str]:
@@ -980,6 +1006,133 @@ def create_app():
         # Create plots - now they return season views
         umap_plot, umap_hover, umap_view = create_umap_plot(source)
         map_plot, map_hover, map_view = create_map_plot(source)
+
+        # Overlays for geographic shift visualisation
+        north_shift_source = ColumnDataSource(data={
+            'x': [],
+            'y': [],
+            'year': [],
+            'lat': [],
+            'lon': [],
+            'count': [],
+        })
+        south_shift_source = ColumnDataSource(data={
+            'x': [],
+            'y': [],
+            'year': [],
+            'lat': [],
+            'lon': [],
+            'count': [],
+        })
+        north_arrow_source = ColumnDataSource(data={
+            'x_start': [],
+            'y_start': [],
+            'x_end': [],
+            'y_end': [],
+        })
+        south_arrow_source = ColumnDataSource(data={
+            'x_start': [],
+            'y_start': [],
+            'x_end': [],
+            'y_end': [],
+        })
+        north_line_source = ColumnDataSource(data={
+            'year': [],
+            'lat': [],
+        })
+        south_line_source = ColumnDataSource(data={
+            'year': [],
+            'lat': [],
+        })
+
+        north_shift_renderer = map_plot.cross(
+            'x',
+            'y',
+            size=18,
+            line_color=GEOSHIFT_NORTH_COLOR,
+            line_width=2,
+            source=north_shift_source,
+            alpha=0.9
+        )
+        south_shift_renderer = map_plot.cross(
+            'x',
+            'y',
+            size=18,
+            line_color=GEOSHIFT_SOUTH_COLOR,
+            line_width=2,
+            source=south_shift_source,
+            alpha=0.9
+        )
+
+        north_shift_hover = HoverTool(
+            renderers=[north_shift_renderer],
+            tooltips=[
+                ("Year", "@year"),
+                ("North mean lat", "@lat{0.00}°"),
+                ("North mean lon", "@lon{0.00}°"),
+                ("Samples", "@count"),
+            ]
+        )
+        south_shift_hover = HoverTool(
+            renderers=[south_shift_renderer],
+            tooltips=[
+                ("Year", "@year"),
+                ("South mean lat", "@lat{0.00}°"),
+                ("South mean lon", "@lon{0.00}°"),
+                ("Samples", "@count"),
+            ]
+        )
+        map_plot.add_tools(north_shift_hover)
+        map_plot.add_tools(south_shift_hover)
+
+        north_shift_arrows = Arrow(
+            end=NormalHead(size=6, line_color=GEOSHIFT_NORTH_COLOR, fill_color=GEOSHIFT_NORTH_COLOR),
+            x_start='x_start',
+            y_start='y_start',
+            x_end='x_end',
+            y_end='y_end',
+            line_color=GEOSHIFT_NORTH_COLOR,
+            line_width=1.5,
+            source=north_arrow_source
+        )
+        south_shift_arrows = Arrow(
+            end=NormalHead(size=6, line_color=GEOSHIFT_SOUTH_COLOR, fill_color=GEOSHIFT_SOUTH_COLOR),
+            x_start='x_start',
+            y_start='y_start',
+            x_end='x_end',
+            y_end='y_end',
+            line_color=GEOSHIFT_SOUTH_COLOR,
+            line_width=1.5,
+            source=south_arrow_source
+        )
+        map_plot.add_layout(north_shift_arrows)
+        map_plot.add_layout(south_shift_arrows)
+
+        shared_lat_range = Range1d(0, 1)
+
+        north_trend_fig = figure(
+            title="North extreme mean latitude",
+            width=320,
+            height=220,
+            toolbar_location=None,
+            x_axis_label="Year",
+            y_axis_label="Latitude (°)"
+        )
+        north_trend_fig.y_range = shared_lat_range
+        north_trend_fig.line('year', 'lat', source=north_line_source, line_color=GEOSHIFT_NORTH_COLOR, line_width=2)
+        north_trend_fig.circle('year', 'lat', source=north_line_source, size=8, color=GEOSHIFT_NORTH_COLOR)
+
+        south_trend_fig = figure(
+            title="South extreme mean latitude",
+            width=320,
+            height=220,
+            toolbar_location=None,
+            x_axis_label="Year",
+            y_axis_label="Latitude (°)"
+        )
+        south_trend_fig.y_range = shared_lat_range
+        south_trend_fig.line('year', 'lat', source=south_line_source, line_color=GEOSHIFT_SOUTH_COLOR, line_width=2)
+        south_trend_fig.circle('year', 'lat', source=south_line_source, size=8, color=GEOSHIFT_SOUTH_COLOR)
         
         # --- CREATE ALL WIDGETS ---
         print("\n" + "-" * 40)
@@ -1151,6 +1304,347 @@ def create_app():
             except (TypeError, ValueError):
                 value = point_alpha_default
             return max(min(value, 1.0), 0.01)
+
+        geoshift_percent_input = Spinner(
+            title="Extreme percentile",
+            low=1,
+            high=50,
+            step=1,
+            value=10,
+            width=140,
+        )
+        geoshift_button = Button(
+            label="Calculate geographic shift",
+            button_type="primary",
+            width=220,
+        )
+        clear_geoshift_button = Button(
+            label="Clear geographic shift",
+            button_type="default",
+            width=220,
+        )
+        geoshift_summary_div = Div(
+            text='<i>Click "Calculate geographic shift" to analyse the visible points.</i>',
+            width=280,
+            styles={
+                'border': '1px solid #ddd',
+                'padding': '6px',
+                'background': '#fff',
+                'border-radius': '4px',
+                'margin-top': '6px'
+            }
+        )
+
+        def _visible_mask_from_view() -> np.ndarray:
+            """Return a boolean mask for currently visible points using the map view."""
+            try:
+                if hasattr(map_view, "filter") and map_view.filter is not None:
+                    booleans = getattr(map_view.filter, "booleans", None)
+                    if booleans is not None and len(booleans) == len(source.data.get('xcid', [])):
+                        return np.array(booleans, dtype=bool)
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[GEOSHIFT] Failed to read map_view filter: {exc}")
+            alpha_values = np.asarray(source.data.get('alpha', []), dtype=float)
+            return alpha_values > 0
+
+        def calculate_geographic_shift() -> None:
+            """Compute yearly geographic extremes for the currently visible points."""
+
+            def reset_sources(message: str) -> None:
+                geoshift_summary_div.text = message
+                empty_shift = {'x': [], 'y': [], 'year': [], 'lat': [], 'lon': [], 'count': []}
+                north_shift_source.data = dict(empty_shift)
+                south_shift_source.data = dict(empty_shift)
+                empty_arrows = {'x_start': [], 'y_start': [], 'x_end': [], 'y_end': []}
+                north_arrow_source.data = dict(empty_arrows)
+                south_arrow_source.data = dict(empty_arrows)
+                north_line_source.data = {'year': [], 'lat': []}
+                south_line_source.data = {'year': [], 'lat': []}
+                shared_lat_range.start = 0
+                shared_lat_range.end = 1
+
+            def build_arrow_data(x_vals: list[float], y_vals: list[float]) -> dict[str, list[float]]:
+                x_start: list[float] = []
+                y_start: list[float] = []
+                x_end: list[float] = []
+                y_end: list[float] = []
+                for idx in range(len(x_vals) - 1):
+                    xs, ys = x_vals[idx], y_vals[idx]
+                    xe, ye = x_vals[idx + 1], y_vals[idx + 1]
+                    if not (np.isfinite(xs) and np.isfinite(ys) and np.isfinite(xe) and np.isfinite(ye)):
+                        continue
+                    x_start.append(float(xs))
+                    y_start.append(float(ys))
+                    x_end.append(float(xe))
+                    y_end.append(float(ye))
+                return {'x_start': x_start, 'y_start': y_start, 'x_end': x_end, 'y_end': y_end}
+
+            try:
+                try:
+                    percentile_value = float(geoshift_percent_input.value or 10)
+                except (TypeError, ValueError):
+                    percentile_value = 10.0
+                percentile_value = max(1.0, min(50.0, percentile_value))
+                geoshift_percent_input.value = int(round(percentile_value))
+                percentile = geoshift_percent_input.value
+
+                alpha_values = np.asarray(source.data.get('alpha', []), dtype=float)
+                if alpha_values.size == 0:
+                    reset_sources("<i>No data available to compute geographic shift.</i>")
+                    return
+
+                visible_mask = _visible_mask_from_view()
+                if visible_mask.size != alpha_values.size:
+                    reset_sources("<i>No data available to compute geographic shift.</i>")
+                    return
+
+                if not visible_mask.any():
+                    reset_sources("<i>No visible points under current filters.</i>")
+                    return
+
+                lat_series = pd.to_numeric(pd.Series(source.data.get('lat', [])), errors='coerce')
+                lon_series = pd.to_numeric(pd.Series(source.data.get('lon', [])), errors='coerce')
+                date_series = pd.to_datetime(pd.Series(source.data.get('date', [])), errors='coerce')
+
+                visible_df = pd.DataFrame({
+                    'lat': lat_series,
+                    'lon': lon_series,
+                    'date': date_series
+                })
+                visible_df = visible_df[visible_mask]
+                visible_df = visible_df.dropna(subset=['lat', 'lon', 'date'])
+                if visible_df.empty:
+                    reset_sources("<i>No visible points have valid coordinates and dates.</i>")
+                    return
+
+                slider_value = getattr(date_slider, 'value', None)
+                if slider_value and len(slider_value) == 2:
+                    slider_start = pd.Timestamp(slider_value[0], unit='ms')
+                    slider_end = pd.Timestamp(slider_value[1], unit='ms')
+                else:
+                    slider_start = visible_df['date'].min()
+                    slider_end = visible_df['date'].max()
+
+                if pd.isna(slider_start) or pd.isna(slider_end):
+                    reset_sources("<i>Unable to read selected date range.</i>")
+                    return
+
+                slider_start = slider_start.normalize()
+                slider_end = slider_end.normalize()
+                slider_end_inclusive = slider_end + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+
+                visible_df = visible_df[
+                    (visible_df['date'] >= slider_start) & (visible_df['date'] <= slider_end_inclusive)
+                ]
+                if visible_df.empty:
+                    reset_sources("<i>No visible points fall inside the selected date window.</i>")
+                    return
+
+                years: list[int] = []
+                north_lats: list[float] = []
+                north_lons: list[float] = []
+                north_counts: list[int] = []
+                south_lats: list[float] = []
+                south_lons: list[float] = []
+                south_counts: list[int] = []
+                lat_samples: list[float] = []
+
+                for year in range(slider_start.year, slider_end.year + 1):
+                    year_start = pd.Timestamp(year=year, month=1, day=1)
+                    year_end = pd.Timestamp(year=year, month=12, day=31, hour=23, minute=59, second=59, microsecond=999999)
+
+                    if year_start < slider_start or year_end > slider_end_inclusive:
+                        continue
+
+                    year_subset = visible_df[
+                        (visible_df['date'] >= year_start) & (visible_df['date'] <= year_end)
+                    ].copy()
+                    if len(year_subset) < 2:
+                        continue
+
+                    # Limit dense clusters: max N recordings inside 2 km diameter (≈1 km radius).
+                    try:
+                        coords = np.radians(year_subset[['lat', 'lon']].to_numpy(dtype=float))
+                        if len(coords):
+                            db = DBSCAN(
+                                eps=GEOSHIFT_CLUSTER_RADIUS_KM / EARTH_RADIUS_KM,
+                                min_samples=1,
+                                metric='haversine'
+                            )
+                            cluster_labels = db.fit_predict(coords)
+                            year_subset['_cluster'] = cluster_labels
+                            year_subset = (
+                                year_subset.sort_values(['_cluster', 'date'])
+                                .groupby('_cluster', sort=False)
+                                .head(GEOSHIFT_MAX_RECORDINGS_PER_CLUSTER)
+                                .drop(columns='_cluster')
+                            )
+                    except Exception as cluster_exc:  # pragma: no cover - defensive
+                        print(f"[GEOSHIFT] Cluster capping failed for {year}: {cluster_exc}")
+
+                    if len(year_subset) < 2:
+                        continue
+
+                    max_non_overlap = len(year_subset) // 2
+                    if max_non_overlap == 0:
+                        continue
+
+                    count_extreme = max(1, int(np.floor(len(year_subset) * (percentile / 100.0))))
+                    count_extreme = min(count_extreme, max_non_overlap)
+                    if count_extreme == 0:
+                        continue
+
+                    ordered = year_subset.sort_values('lat', kind='mergesort')
+                    south_slice = ordered.iloc[:count_extreme]
+                    north_slice = ordered.iloc[-count_extreme:]
+
+                    south_mean_lat = float(south_slice['lat'].mean())
+                    south_mean_lon = float(south_slice['lon'].mean())
+                    north_mean_lat = float(north_slice['lat'].mean())
+                    north_mean_lon = float(north_slice['lon'].mean())
+
+                    years.append(year)
+                    north_lats.append(north_mean_lat)
+                    north_lons.append(north_mean_lon)
+                    north_counts.append(int(len(north_slice)))
+                    south_lats.append(south_mean_lat)
+                    south_lons.append(south_mean_lon)
+                    south_counts.append(int(len(south_slice)))
+                    lat_samples.extend(south_slice['lat'].tolist())
+                    lat_samples.extend(north_slice['lat'].tolist())
+
+                if not years:
+                    reset_sources("<i>No full calendar years inside the selected range have enough visible data.</i>")
+                    return
+
+                north_x, north_y = lonlat_to_web_mercator(north_lons, north_lats)
+                south_x, south_y = lonlat_to_web_mercator(south_lons, south_lats)
+
+                north_shift_source.data = {
+                    'x': [float(val) for val in north_x],
+                    'y': [float(val) for val in north_y],
+                    'year': [str(year) for year in years],
+                    'lat': [float(val) for val in north_lats],
+                    'lon': [float(val) for val in north_lons],
+                    'count': [int(val) for val in north_counts],
+                }
+                south_shift_source.data = {
+                    'x': [float(val) for val in south_x],
+                    'y': [float(val) for val in south_y],
+                    'year': [str(year) for year in years],
+                    'lat': [float(val) for val in south_lats],
+                    'lon': [float(val) for val in south_lons],
+                    'count': [int(val) for val in south_counts],
+                }
+
+                if len(years) > 1:
+                    north_arrow_source.data = build_arrow_data(list(north_x), list(north_y))
+                    south_arrow_source.data = build_arrow_data(list(south_x), list(south_y))
+                else:
+                    empty_arrow = {'x_start': [], 'y_start': [], 'x_end': [], 'y_end': []}
+                    north_arrow_source.data = dict(empty_arrow)
+                    south_arrow_source.data = dict(empty_arrow)
+
+                north_line_source.data = {
+                    'year': [int(year) for year in years],
+                    'lat': [float(val) for val in north_lats],
+                }
+                south_line_source.data = {
+                    'year': [int(year) for year in years],
+                    'lat': [float(val) for val in south_lats],
+                }
+                if lat_samples:
+                    lat_min = float(np.nanmin(lat_samples))
+                    lat_max = float(np.nanmax(lat_samples))
+                    if np.isfinite(lat_min) and np.isfinite(lat_max):
+                        if np.isclose(lat_min, lat_max):
+                            lat_min -= 0.5
+                            lat_max += 0.5
+                        shared_lat_range.start = lat_min
+                        shared_lat_range.end = lat_max
+
+                north_shifts = [north_lats[i + 1] - north_lats[i] for i in range(len(north_lats) - 1)]
+                south_shifts = [south_lats[i + 1] - south_lats[i] for i in range(len(south_lats) - 1)]
+                avg_north_shift = float(np.mean(north_shifts)) if north_shifts else None
+                avg_south_shift = float(np.mean(south_shifts)) if south_shifts else None
+
+                def compute_trend(year_vals: list[int], lat_vals: list[float]) -> Optional[float]:
+                    """Return slope in degrees/year for best-fit line."""
+                    if len(year_vals) < 2:
+                        return None
+                    try:
+                        slope, _ = np.polyfit(year_vals, lat_vals, 1)
+                        return float(slope)
+                    except Exception:
+                        return None
+
+                north_slope = compute_trend(years, north_lats)
+                south_slope = compute_trend(years, south_lats)
+
+                rows_html = "".join(
+                    f"<tr>"
+                    f"<td style='padding:2px 4px;'>{year}</td>"
+                    f"<td style='padding:2px 4px; color:{GEOSHIFT_NORTH_COLOR};'>"
+                    f"{north_lats[idx]:.2f}&deg; (n={north_counts[idx]})</td>"
+                    f"<td style='padding:2px 4px; color:{GEOSHIFT_SOUTH_COLOR};'>"
+                    f"{south_lats[idx]:.2f}&deg; (n={south_counts[idx]})</td>"
+                    f"</tr>"
+                    for idx, year in enumerate(years)
+                )
+                table_html = (
+                    "<table style='width:100%; border-collapse:collapse; margin-top:6px;'>"
+                    "<thead><tr style='text-align:left;'>"
+                    "<th style='padding:2px 4px;'>Year</th>"
+                    "<th style='padding:2px 4px;'>North mean lat</th>"
+                    "<th style='padding:2px 4px;'>South mean lat</th>"
+                    "</tr></thead>"
+                    f"<tbody>{rows_html}</tbody></table>"
+                )
+
+                summary_lines = [
+                    f"<b>Geographic shift</b> ({percentile}% extremes, "
+                    f"≤{GEOSHIFT_MAX_RECORDINGS_PER_CLUSTER} recs / {GEOSHIFT_CLUSTER_DIAMETER_KM:.1f} km diameter)",
+                    f"Full years analysed: {', '.join(str(year) for year in years)}",
+                ]
+                if avg_north_shift is not None:
+                    summary_lines.append(
+                        f"Avg north lat shift: <span style='color:{GEOSHIFT_NORTH_COLOR};'>"
+                        f"{avg_north_shift:+.2f}&deg;/year</span> (n={len(north_shifts)})"
+                    )
+                else:
+                    summary_lines.append("Avg north lat shift: n/a")
+                if avg_south_shift is not None:
+                    summary_lines.append(
+                        f"Avg south lat shift: <span style='color:{GEOSHIFT_SOUTH_COLOR};'>"
+                        f"{avg_south_shift:+.2f}&deg;/year</span> (n={len(south_shifts)})"
+                    )
+                else:
+                    summary_lines.append("Avg south lat shift: n/a")
+                if north_slope is not None:
+                    summary_lines.append(
+                        f"North trend slope: <span style='color:{GEOSHIFT_NORTH_COLOR};'>"
+                        f"{north_slope:+.2f}&deg;/year</span>"
+                    )
+                else:
+                    summary_lines.append("North trend slope: n/a")
+                if south_slope is not None:
+                    summary_lines.append(
+                        f"South trend slope: <span style='color:{GEOSHIFT_SOUTH_COLOR};'>"
+                        f"{south_slope:+.2f}&deg;/year</span>"
+                    )
+                else:
+                    summary_lines.append("South trend slope: n/a")
+
+                geoshift_summary_div.text = "<br>".join(summary_lines) + table_html
+
+            except Exception as exc:  # pragma: no cover - defensive
+                reset_sources(
+                    f"<span style='color:#b00;'>Geographic shift failed: {exc}</span>"
+                )
+                traceback.print_exc()
+
+        def clear_geographic_shift() -> None:
+            reset_sources('<i>Geographic shift cleared.</i>')
 
         # UMAP parameter inputs
         umap_params_div = Div(text="<b>UMAP Parameters:</b>", width=200)
@@ -2009,15 +2503,32 @@ def create_app():
         # --- OTHER CALLBACKS ---
         # Hover toggle callback
         hover_toggle_callback = CustomJS(args=dict(
-            h_u=umap_hover, h_m=map_hover, toggle=hover_toggle
+            h_u=umap_hover,
+            h_m=map_hover,
+            shift_hovers=[north_shift_hover, south_shift_hover],
+            toggle=hover_toggle
         ), code="""
             const showInfo = toggle.active;
             if (!window.original_umap_tooltips) {
-                window.original_umap_tooltips = h_u.tooltips;
-                window.original_map_tooltips = h_m.tooltips;
+                window.original_umap_tooltips = h_u ? h_u.tooltips : null;
+                window.original_map_tooltips = h_m ? h_m.tooltips : null;
+            }
+            if (!window.original_shift_tooltips_list) {
+                window.original_shift_tooltips_list = [];
+                for (const tool of shift_hovers) {
+                    window.original_shift_tooltips_list.push(tool ? tool.tooltips : null);
+                }
             }
             if (h_u) h_u.tooltips = showInfo ? window.original_umap_tooltips : null;
             if (h_m) h_m.tooltips = showInfo ? window.original_map_tooltips : null;
+            if (shift_hovers && window.original_shift_tooltips_list) {
+                for (let i = 0; i < shift_hovers.length; i++) {
+                    const tool = shift_hovers[i];
+                    if (!tool) continue;
+                    const original = window.original_shift_tooltips_list[i];
+                    tool.tooltips = showInfo ? original : null;
+                }
+            }
         """)
         hover_toggle.js_on_change('active', hover_toggle_callback)
         
@@ -2058,6 +2569,8 @@ def create_app():
             a.load();
         """)
         test_audio_btn.js_on_click(test_audio_callback)
+        geoshift_button.on_click(calculate_geographic_shift)
+        clear_geoshift_button.on_click(clear_geographic_shift)
         
         
         # Playlist callback - FIXED to only include visible points
@@ -2625,7 +3138,22 @@ def create_app():
             type_checks,
             time_range_slider
         )
-        controls = row(color_select, filter_widgets, hover_toggle, test_audio_btn, umap_params_box, hdbscan_params_box)
+        geoshift_box = column(
+            geoshift_percent_input,
+            geoshift_button,
+            clear_geoshift_button,
+            geoshift_summary_div,
+            width=300,
+            styles={'border': '1px solid #ddd', 'padding': '10px', 'border-radius': '5px'}
+        )
+        geoshift_plot_column = column(
+            north_trend_fig,
+            south_trend_fig,
+            width=340,
+            styles={'border': '1px solid #ddd', 'padding': '10px', 'border-radius': '5px'}
+        )
+        geoshift_layout = row(geoshift_box, geoshift_plot_column)
+        controls = row(color_select, filter_widgets, hover_toggle, test_audio_btn, umap_params_box, hdbscan_params_box, geoshift_layout)
         
         plots = row(umap_plot, map_plot, playlist_panel)
         date_bounds_controls = row(date_bounds_slider, reset_bounds_btn)
