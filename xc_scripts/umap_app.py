@@ -24,6 +24,7 @@ import pandas as pd
 import numpy as np
 import umap
 from sklearn.cluster import KMeans, DBSCAN
+from sklearn.neighbors import BallTree
 from sklearn.metrics import silhouette_score
 import traceback
 import colorsys
@@ -913,6 +914,7 @@ def prepare_hover_data(
             'kmeans3': metadata['kmeans3'].tolist(),
             'kmeans3_str': metadata['kmeans3_str'].tolist(),
             'hdbscan_on': [True] * len(metadata),
+            'dedupe_on': [True] * len(metadata),
             'audio_url': metadata['audio_url'].tolist() if 'audio_url' in metadata else [''] * len(metadata),
             'spectrogram_url': metadata['spectrogram_url'].tolist() if 'spectrogram_url' in metadata else [''] * len(metadata),
             'spectrogram_exists': metadata['spectrogram_exists'].tolist() if 'spectrogram_exists' in metadata else [False] * len(metadata),
@@ -1276,6 +1278,70 @@ def create_app():
         south_trend_fig.y_range = shared_lat_range
         south_trend_fig.line('year', 'lat', source=south_line_source, line_color=GEOSHIFT_SOUTH_COLOR, line_width=2)
         south_trend_fig.circle('year', 'lat', source=south_line_source, size=8, color=GEOSHIFT_SOUTH_COLOR)
+
+        def refresh_alpha(
+            data_override: Optional[dict[str, list[Any]]] = None,
+            *,
+            update_source: bool = True,
+        ) -> dict[str, list[Any]]:
+            """Recalculate alpha values based on current visibility flags."""
+
+            data_dict = dict(source.data) if data_override is None else data_override
+            alpha_base_raw = data_dict.get('alpha_base', [])
+            alpha_base = list(alpha_base_raw)
+            n = len(alpha_base)
+
+            alpha_values = list(data_dict.get('alpha', []))
+            if len(alpha_values) < n:
+                alpha_values.extend([0.0] * (n - len(alpha_values)))
+            elif len(alpha_values) > n:
+                alpha_values = alpha_values[:n]
+
+            def _normalize(values, default_value: bool) -> list[bool]:
+                if values is None:
+                    arr = [default_value] * n
+                else:
+                    arr = list(values)
+                    if len(arr) < n:
+                        arr.extend([default_value] * (n - len(arr)))
+                    elif len(arr) > n:
+                        arr = arr[:n]
+                return [bool(item) for item in arr]
+
+            cluster_on = _normalize(data_dict.get('cluster_on'), True)
+            hdbscan_on = _normalize(data_dict.get('hdbscan_on'), True)
+            sex_on = _normalize(data_dict.get('sex_on'), True)
+            type_on = _normalize(data_dict.get('type_on'), True)
+            time_on = _normalize(data_dict.get('time_on'), True)
+            season_on = _normalize(data_dict.get('season_on'), True)
+            selection_on = _normalize(data_dict.get('selection_on'), True)
+            dedupe_on = _normalize(data_dict.get('dedupe_on'), True)
+
+            for idx in range(n):
+                if (
+                    cluster_on[idx]
+                    and hdbscan_on[idx]
+                    and sex_on[idx]
+                    and type_on[idx]
+                    and time_on[idx]
+                    and season_on[idx]
+                    and selection_on[idx]
+                    and dedupe_on[idx]
+                ):
+                    alpha_values[idx] = alpha_base[idx] if idx < len(alpha_base) else 0.0
+                else:
+                    alpha_values[idx] = 0.0
+
+            data_dict['alpha'] = alpha_values
+            visibility_flags = [value > 0 for value in alpha_values]
+            if hasattr(umap_view, 'filter') and umap_view.filter is not None:
+                umap_view.filter.booleans = list(visibility_flags)
+            if hasattr(map_view, 'filter') and map_view.filter is not None:
+                map_view.filter.booleans = list(visibility_flags)
+
+            if update_source:
+                source.data = data_dict
+            return data_dict
         
         # --- CREATE ALL WIDGETS ---
         print("\n" + "-" * 40)
@@ -1439,6 +1505,219 @@ def create_app():
             value=point_alpha_default,
             width=120,
         )
+
+        dedupe_toggle = Toggle(
+            label="Filter local duplicates",
+            active=False,
+            width=220,
+            button_type="default",
+        )
+        dedupe_distance_spinner = Spinner(
+            title="Spatial radius (km)",
+            low=0.1,
+            high=500.0,
+            step=0.1,
+            value=2.0,
+            width=220,
+        )
+        dedupe_days_spinner = Spinner(
+            title="Temporal window (days)",
+            low=0.0,
+            high=60.0,
+            step=0.5,
+            value=1.0,
+            width=220,
+        )
+        dedupe_umap_spinner = Spinner(
+            title="UMAP distance",
+            low=0.0,
+            high=10.0,
+            step=0.05,
+            value=0.2,
+            width=220,
+        )
+        dedupe_status_div = Div(
+            text="<i>Duplicate filter inactive.</i>",
+            width=240,
+            styles={
+                'border': '1px solid #ddd',
+                'padding': '6px',
+                'background': '#fff',
+                'border-radius': '4px',
+                'margin-top': '4px'
+            }
+        )
+
+        def compute_local_duplicate_mask(
+            distance_km: float,
+            day_window: float,
+            umap_threshold: float,
+        ) -> np.ndarray:
+            """Return a boolean mask marking which points to keep after de-duplication."""
+
+            data = source.data
+            n_points = len(data.get('x', []))
+            if n_points == 0:
+                return np.ones(0, dtype=bool)
+
+            lat_series = pd.to_numeric(pd.Series(data.get('lat', [])), errors='coerce')
+            lon_series = pd.to_numeric(pd.Series(data.get('lon', [])), errors='coerce')
+            x_series = pd.to_numeric(pd.Series(data.get('x', [])), errors='coerce')
+            y_series = pd.to_numeric(pd.Series(data.get('y', [])), errors='coerce')
+            date_series = pd.to_datetime(pd.Series(data.get('date', [])), errors='coerce')
+
+            valid_mask = (
+                lat_series.notna()
+                & lon_series.notna()
+                & x_series.notna()
+                & y_series.notna()
+                & date_series.notna()
+            )
+            valid_indices = np.flatnonzero(valid_mask.to_numpy(dtype=bool))
+            keep_mask = np.ones(n_points, dtype=bool)
+            if len(valid_indices) <= 1:
+                return keep_mask
+
+            lat_valid = lat_series.iloc[valid_indices].to_numpy(dtype=float)
+            lon_valid = lon_series.iloc[valid_indices].to_numpy(dtype=float)
+            coords_rad = np.column_stack((np.deg2rad(lat_valid), np.deg2rad(lon_valid)))
+
+            try:
+                tree = BallTree(coords_rad, metric='haversine')
+            except ValueError:
+                return keep_mask
+
+            distance_radians = max(distance_km, 0.0) / EARTH_RADIUS_KM
+            neighbors = tree.query_radius(coords_rad, r=distance_radians)
+
+            umap_coords = np.column_stack((
+                x_series.iloc[valid_indices].to_numpy(dtype=float),
+                y_series.iloc[valid_indices].to_numpy(dtype=float),
+            ))
+            date_values = date_series.iloc[valid_indices]
+            date_ns = date_values.to_numpy(dtype='datetime64[ns]')
+            date_ns_int = date_ns.astype('int64')
+
+            max_time_delta = pd.to_timedelta(max(day_window, 0.0), unit='D').to_numpy()
+            umap_limit_sq = max(umap_threshold, 0.0) ** 2
+
+            subset_size = len(valid_indices)
+            parent = list(range(subset_size))
+            rank = [0] * subset_size
+
+            def find_root(idx: int) -> int:
+                while parent[idx] != idx:
+                    parent[idx] = parent[parent[idx]]
+                    idx = parent[idx]
+                return idx
+
+            def union(idx_a: int, idx_b: int) -> None:
+                root_a = find_root(idx_a)
+                root_b = find_root(idx_b)
+                if root_a == root_b:
+                    return
+                if rank[root_a] < rank[root_b]:
+                    parent[root_a] = root_b
+                elif rank[root_a] > rank[root_b]:
+                    parent[root_b] = root_a
+                else:
+                    parent[root_b] = root_a
+                    rank[root_a] += 1
+
+            for local_idx, neighbor_indices in enumerate(neighbors):
+                for neighbor_local in neighbor_indices:
+                    if neighbor_local == local_idx or neighbor_local < local_idx:
+                        continue
+                    time_diff = np.abs(date_ns[local_idx] - date_ns[neighbor_local])
+                    if time_diff > max_time_delta:
+                        continue
+                    delta = umap_coords[local_idx] - umap_coords[neighbor_local]
+                    if (delta[0] * delta[0] + delta[1] * delta[1]) > umap_limit_sq:
+                        continue
+                    union(local_idx, neighbor_local)
+
+            components: dict[int, list[int]] = {}
+            for local_idx in range(subset_size):
+                root = find_root(local_idx)
+                components.setdefault(root, []).append(local_idx)
+
+            for members in components.values():
+                if len(members) <= 1:
+                    continue
+                best_local = min(
+                    members,
+                    key=lambda idx_local: (
+                        int(date_ns_int[idx_local]),
+                        valid_indices[idx_local],
+                    ),
+                )
+                for idx_local in members:
+                    global_idx = valid_indices[idx_local]
+                    keep_mask[global_idx] = idx_local == best_local
+
+            return keep_mask
+
+        def apply_dedupe_filter() -> None:
+            """Apply or clear the duplicate filter based on current widget values."""
+
+            data = source.data
+            n_points = len(data.get('x', []))
+            if n_points == 0:
+                dedupe_status_div.text = "<i>No data available to filter.</i>"
+                return
+
+            def _clean_value(widget, default: float, *, minimum: float | None = None) -> float:
+                try:
+                    value = float(widget.value)
+                except (TypeError, ValueError):
+                    value = default
+                if not np.isfinite(value):
+                    value = default
+                if minimum is not None:
+                    value = max(value, minimum)
+                widget.value = value
+                return value
+
+            distance_val = _clean_value(dedupe_distance_spinner, 2.0, minimum=0.0)
+            days_val = _clean_value(dedupe_days_spinner, 1.0, minimum=0.0)
+            umap_val = _clean_value(dedupe_umap_spinner, 0.2, minimum=0.0)
+
+            if not dedupe_toggle.active:
+                reset_data = dict(source.data)
+                reset_data['dedupe_on'] = [True] * n_points
+                refresh_alpha(reset_data)
+                dedupe_status_div.text = "<i>Duplicate filter inactive.</i>"
+                return
+
+            mask = compute_local_duplicate_mask(distance_val, days_val, umap_val)
+            duplicates_removed = int(mask.size - np.count_nonzero(mask))
+            updated = dict(source.data)
+            updated['dedupe_on'] = mask.tolist()
+            refresh_alpha(updated)
+
+            if mask.size == 0:
+                dedupe_status_div.text = "<i>No data available to evaluate.</i>"
+                return
+
+            remaining = int(np.count_nonzero(mask))
+            if duplicates_removed > 0:
+                dedupe_status_div.text = (
+                    f"Kept {remaining} of {mask.size} points "
+                    f"(removed {duplicates_removed}) within "
+                    f"{distance_val:g} km / {days_val:g} day / UMAP ≤ {umap_val:g}."
+                )
+            else:
+                dedupe_status_div.text = (
+                    "No points met the spatial, temporal, and UMAP similarity thresholds."
+                )
+
+        def _on_dedupe_update(attr: str, old: Any, new: Any) -> None:
+            apply_dedupe_filter()
+
+        dedupe_toggle.on_change('active', _on_dedupe_update)
+        dedupe_distance_spinner.on_change('value', _on_dedupe_update)
+        dedupe_days_spinner.on_change('value', _on_dedupe_update)
+        dedupe_umap_spinner.on_change('value', _on_dedupe_update)
 
         def get_spinner_alpha() -> float:
             """Return the current spinner alpha, clamped to (0, 1]."""
@@ -1911,27 +2190,7 @@ def create_app():
             current['selection_on'] = [True] * total
             selection_status_div.text = "<i>No active selection.</i>"
             selection_create_btn.disabled = True
-            alpha_base = list(current.get('alpha_base', []))
-            alpha_values = list(current.get('alpha', []))
-            cluster_on = current.get('cluster_on', [True] * total)
-            hdbscan_on = current.get('hdbscan_on', [True] * total)
-            sex_on = current.get('sex_on', [True] * total)
-            type_on = current.get('type_on', [True] * total)
-            time_on = current.get('time_on', [True] * total)
-            season_on = current.get('season_on', [True] * total)
-            for idx in range(total):
-                if idx < len(alpha_values):
-                    if (cluster_on[idx] and hdbscan_on[idx] and sex_on[idx] and type_on[idx]
-                            and time_on[idx] and season_on[idx]):
-                        alpha_values[idx] = alpha_base[idx] if idx < len(alpha_base) else 0.0
-                    else:
-                        alpha_values[idx] = 0.0
-            current['alpha'] = alpha_values
-            visibility_flags = [value > 0 for value in alpha_values]
-            if hasattr(umap_view, 'filter') and umap_view.filter is not None:
-                umap_view.filter.booleans = list(visibility_flags)
-            if hasattr(map_view, 'filter') and map_view.filter is not None:
-                map_view.filter.booleans = list(visibility_flags)
+            current = refresh_alpha(current, update_source=False)
             if color_select.value == "Selection":
                 current['active_color'] = list(current['selection_color'])
             source.data = current
@@ -2069,13 +2328,15 @@ def create_app():
             const type_on = d['type_on'] || new Array(season.length).fill(true);
             const time_on = d['time_on'] || new Array(season.length).fill(true);
             const selection_on = d['selection_on'] || new Array(season.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(season.length).fill(true);
 
             const n = season.length;
             for (let i = 0; i < n; i++) {
                 const season_visible = active.has(String(season[i]));
                 d['season_on'][i] = season_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && selection_on[i] && season_visible) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                    time_on[i] && selection_on[i] && dedupe_on[i] && season_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2125,13 +2386,15 @@ def create_app():
             const time_on = d['time_on'] || new Array(km.length).fill(true);
             const season_on = d['season_on'] || new Array(km.length).fill(true);
             const selection_on = d['selection_on'] || new Array(km.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(km.length).fill(true);
 
             const n = km.length;
             for (let i = 0; i < n; i++) {
                 const cluster_visible = active.has(String(km[i]));
                 d['cluster_on'][i] = cluster_visible;
 
-                if (cluster_visible && hdbscan_on[i] && season_on[i] && sex_on[i] && type_on[i] && time_on[i] && selection_on[i]) {
+                if (cluster_visible && hdbscan_on[i] && season_on[i] && sex_on[i] &&
+                    type_on[i] && time_on[i] && selection_on[i] && dedupe_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2181,6 +2444,7 @@ def create_app():
             const time_on = d['time_on'] || new Array(sex.length).fill(true);
             const season_on = d['season_on'] || new Array(sex.length).fill(true);
             const selection_on = d['selection_on'] || new Array(sex.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(sex.length).fill(true);
 
 
             const n = sex.length;
@@ -2188,7 +2452,8 @@ def create_app():
                 const sex_visible = active.has(String(sex[i]));
                 d['sex_on'][i] = sex_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_visible && type_on[i] && time_on[i] && season_on[i] && selection_on[i]) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_visible && type_on[i] &&
+                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2238,13 +2503,15 @@ def create_app():
             const time_on = d['time_on'] || new Array(type.length).fill(true);
             const season_on = d['season_on'] || new Array(type.length).fill(true);
             const selection_on = d['selection_on'] || new Array(type.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(type.length).fill(true);
 
             const n = type.length;
             for (let i = 0; i < n; i++) {
                 const type_visible = active.has(String(type[i]));
                 d['type_on'][i] = type_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_visible && time_on[i] && season_on[i] && selection_on[i]) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_visible &&
+                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2285,6 +2552,7 @@ def create_app():
             const type_on = d['type_on'] || new Array(time_hour.length).fill(true);
             const season_on = d['season_on'] || new Array(time_hour.length).fill(true);
             const selection_on = d['selection_on'] || new Array(time_hour.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(time_hour.length).fill(true);
 
             const min_hour = slider.value[0];
             const max_hour = slider.value[1];
@@ -2297,7 +2565,8 @@ def create_app():
                 d['time_on'][i] = time_visible;
                 
                 // Alpha is visible only if ALL filters allow it
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_visible && season_on[i] && selection_on[i]) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                    time_visible && season_on[i] && selection_on[i] && dedupe_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2351,6 +2620,7 @@ def create_app():
             const type_on = d['type_on'] || new Array(assignments.length).fill(true);
             const time_on = d['time_on'] || new Array(assignments.length).fill(true);
             const season_on = d['season_on'] || new Array(assignments.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(assignments.length).fill(true);
 
             const n = assignments.length;
             let hasAssigned = false;
@@ -2362,7 +2632,7 @@ def create_app():
                 const selection_visible = active_groups.has(group_id);
                 selection_on[i] = selection_visible;
                 if (selection_visible && cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
-                    time_on[i] && season_on[i] && alpha_base[i] > 0) {
+                    time_on[i] && season_on[i] && dedupe_on[i] && alpha_base[i] > 0) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2576,6 +2846,7 @@ def create_app():
             const time_on = d['time_on'] || new Array(ts.length).fill(true);
             const season_on = d['season_on'] || new Array(ts.length).fill(true);
             const selection_on = d['selection_on'] || new Array(ts.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(ts.length).fill(true);
             
             const cut0 = Number(s.value[0]);
             const cut1 = Number(s.value[1]);
@@ -2590,7 +2861,8 @@ def create_app():
                 alpha_base[i] = base;
 
                 // Final alpha depends on ALL filters
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] && time_on[i] && season_on[i] && selection_on[i] && base > 0) {
+                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i] && base > 0) {
                     alpha[i] = base;
                 } else {
                     alpha[i] = 0.0;
@@ -2997,6 +3269,7 @@ def create_app():
             # When we zoom, and we recreate widgets, should this source data be changed before their creation? Does this currently happen?
             source.data = new_data
             clear_selection_groups()
+            apply_dedupe_filter()
             
             # Update filter widgets with new unique values and reset to all active
             season_checks.labels = new_unique_seasons
@@ -3073,6 +3346,7 @@ def create_app():
             # same comment as in zoom_to_visible
             source.data = new_data
             clear_selection_groups()
+            apply_dedupe_filter()
             
             # Reset filter widgets with original values and set all active
             season_checks.labels = original_unique_seasons
@@ -3171,6 +3445,7 @@ def create_app():
             hdbscan_checks.active = list(range(len(unique_hdbscan)))
             
             source.data = current_data
+            apply_dedupe_filter()
             
             # Update stats
             hdbscan_stats_div.text = f"<b>HDBSCAN:</b> {n_clusters} clusters, {n_noise} noise points ({100*n_noise/len(cluster_labels):.1f}%)"
@@ -3199,6 +3474,7 @@ def create_app():
             const type_on = d['type_on'] || new Array(hdbscan.length).fill(true);
             const time_on = d['time_on'] || new Array(hdbscan.length).fill(true);
             const selection_on = d['selection_on'] || new Array(hdbscan.length).fill(true);
+            const dedupe_on = d['dedupe_on'] || new Array(hdbscan.length).fill(true);
 
             const n = hdbscan.length;
             for (let i = 0; i < n; i++) {
@@ -3206,7 +3482,7 @@ def create_app():
                 d['hdbscan_on'][i] = hdbscan_visible;
 
                 if (season_on[i] && cluster_on[i] && sex_on[i] && type_on[i] &&
-                    time_on[i] && selection_on[i] && hdbscan_visible) {
+                    time_on[i] && selection_on[i] && dedupe_on[i] && hdbscan_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -3266,7 +3542,21 @@ def create_app():
             point_alpha_spinner,
             zoom_status,
         )
-        
+
+        dedupe_controls = column(
+            dedupe_toggle,
+            dedupe_distance_spinner,
+            dedupe_days_spinner,
+            dedupe_umap_spinner,
+            dedupe_status_div,
+            width=260,
+            styles={
+                'border': '1px solid #ddd',
+                'padding': '10px',
+                'border-radius': '5px'
+            }
+        )
+
         # Create a column that contains all filter widgets
         filter_widgets = column(
             selection_help_div,
@@ -3279,6 +3569,7 @@ def create_app():
             hdbscan_checks,
             sex_checks,
             type_checks,
+            dedupe_controls,
             time_range_slider
         )
         geoshift_box = column(
