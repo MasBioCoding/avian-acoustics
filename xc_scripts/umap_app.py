@@ -14,6 +14,7 @@ import argparse
 import base64
 import errno
 import sys
+from datetime import datetime
 import yaml
 from pathlib import Path
 from typing import Any, Optional, Tuple
@@ -38,6 +39,7 @@ from bokeh.models import (
     TapTool, Toggle, Select, CheckboxGroup, CustomJS, RangeSlider, CDSView, BooleanFilter,
     Spinner, Arrow, NormalHead, Range1d
 )
+from bokeh.events import ButtonClick
 from bokeh.plotting import figure
 import hdbscan
 
@@ -68,11 +70,31 @@ GEOSHIFT_CLUSTER_RADIUS_KM = GEOSHIFT_CLUSTER_DIAMETER_KM / 2.0
 GEOSHIFT_NORTH_COLOR = "#1f78b4"
 GEOSHIFT_SOUTH_COLOR = "#d62728"
 
+def normalize_clip_index(value: Any) -> Optional[int]:
+    """Convert a clip index-like value to an integer, returning None when invalid."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        # Non-numeric types may raise here; fall through to parsing logic.
+        pass
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            return None
+
 print("=" * 80)
 print("STARTING BOKEH SERVER APP")
 print("=" * 80)
 
 _STATIC_HTTP_SERVERS: dict[str, dict[str, Any]] = {}
+APP_ROOT = Path(__file__).resolve().parent.parent
 
 # -----------------------------------------------------------------------------
 # CONFIGURATION
@@ -232,6 +254,11 @@ SPECIES_SLUG = config["species"]["slug"]
 EMBEDDINGS_FILE = ROOT_PATH / "embeddings" / SPECIES_SLUG / "embeddings.csv"
 METADATA_FILE = ROOT_PATH / "embeddings" / SPECIES_SLUG / "metadata.csv"
 CLIPS_DIR = ROOT_PATH / "clips" / SPECIES_SLUG
+XC_GROUPS_ROOT = ROOT_PATH / "xc_groups"
+SPECIES_GROUPS_DIR = XC_GROUPS_ROOT / SPECIES_SLUG
+VOCAL_TYPES_DIR = SPECIES_GROUPS_DIR / "vocal_types"
+DIALECTS_DIR = SPECIES_GROUPS_DIR / "dialects"
+GROUP_TABLE_SUFFIX = ".csv"
 _audio_cfg = config.get("audio", {}) or {}
 _audio_base = _audio_cfg.get("base_url")
 AUDIO_BASE_URL = (
@@ -889,6 +916,15 @@ def prepare_hover_data(
         earliest_date = dates[valid].min() if valid.any() else pd.Timestamp("2000-01-01")
         alpha = np.where(valid & (dates >= earliest_date), effective_alpha, 0.0)
         
+        # Clip indices (needed for saving/loading selection groups)
+        if 'clip_index' in metadata.columns:
+            clip_index_values = [
+                normalize_clip_index(value)
+                for value in metadata['clip_index'].tolist()
+            ]
+        else:
+            clip_index_values = [None] * len(metadata)
+
         # Build data dictionary
         print("  Building data dictionary...")
         data: dict[str, list] = {
@@ -940,7 +976,8 @@ def prepare_hover_data(
             'original_index': np.arange(len(metadata)).tolist(),
             # fields used to draw highlight outlines on hover over playlist items
             'hl_alpha': [0.0] * len(metadata),
-            'hl_width': [0.0] * len(metadata)
+            'hl_width': [0.0] * len(metadata),
+            'clip_index': clip_index_values,
         }
 
         print(f"Data dictionary created with {len(data)} keys")
@@ -1402,6 +1439,9 @@ def create_app():
             text=(
                 "<b>Selection groups:</b> use the box or lasso selection tools on either plot "
                 "to highlight points, then click <i>Create group from selection</i> to save them. "
+                "Select a group in the checklist and click <i>Save group to vocal types</i> or "
+                "<i>Save group to dialects</i> to export it, or click the matching "
+                "<i>Load</i> button to recreate saved groups from disk. "
                 "Use the checkboxes to toggle visibility of saved groups."
             ),
             width=300,
@@ -1421,6 +1461,37 @@ def create_app():
             visible=False,
             disabled=True,
         )
+        selection_save_vocal_btn = Button(
+            label="Save group to vocal types",
+            button_type="success",
+            width=220,
+            visible=False,
+            disabled=True,
+        )
+        selection_save_dialect_btn = Button(
+            label="Save group to dialects",
+            button_type="success",
+            width=220,
+            visible=False,
+            disabled=True,
+        )
+        selection_load_vocal_btn = Button(
+            label="Load vocal types",
+            button_type="default",
+            width=220,
+            visible=False,
+        )
+        selection_load_dialect_btn = Button(
+            label="Load dialects",
+            button_type="default",
+            width=220,
+            visible=False,
+        )
+        description_request_source = ColumnDataSource(data={
+            'kind': [],
+            'description': [],
+            'nonce': []
+        })
         selection_checks = CheckboxGroup(
             labels=["Unassigned (0)"],
             active=[0],
@@ -2167,6 +2238,15 @@ def create_app():
             is_selection_mode = color_select.value == "Selection"
             selection_checks.visible = is_selection_mode
             selection_help_div.visible = is_selection_mode
+            for btn in (
+                selection_save_vocal_btn,
+                selection_save_dialect_btn,
+                selection_load_vocal_btn,
+                selection_load_dialect_btn,
+            ):
+                btn.visible = is_selection_mode
+            for save_btn in (selection_save_vocal_btn, selection_save_dialect_btn):
+                save_btn.disabled = not selection_groups
             if not is_selection_mode:
                 selection_status_div.text = ""
             elif not selection_status_div.text:
@@ -2197,6 +2277,54 @@ def create_app():
             source.selected.indices = []
             update_selection_widgets()
 
+        def assign_new_group(indices: list[int]) -> tuple[int, int]:
+            """Assign the provided indices to a newly created selection group."""
+            nonlocal selection_groups, next_selection_id
+            assignments = list(source.data.get('selection_group', []))
+            total = len(assignments)
+            if total == 0:
+                return -1, 0
+
+            valid_indices = sorted({
+                idx for idx in indices
+                if isinstance(idx, int) and 0 <= idx < total
+            })
+            if not valid_indices:
+                return -1, 0
+
+            colors = list(source.data.get('selection_color', []))
+            selection_flags = list(source.data.get('selection_on', []))
+            if len(colors) < total:
+                colors.extend([SELECTION_UNASSIGNED_COLOR] * (total - len(colors)))
+            if len(selection_flags) < total:
+                selection_flags.extend([True] * (total - len(selection_flags)))
+
+            group_id = next_selection_id
+            next_selection_id += 1
+            group_color = pick_group_color()
+
+            for idx in valid_indices:
+                assignments[idx] = group_id
+                colors[idx] = group_color
+                selection_flags[idx] = True
+
+            for idx in range(total):
+                if assignments[idx] == -1:
+                    colors[idx] = SELECTION_UNASSIGNED_COLOR
+
+            selection_groups.append({'id': group_id, 'color': group_color})
+
+            updated = dict(source.data)
+            updated['selection_group'] = assignments
+            updated['selection_color'] = colors
+            updated['selection_on'] = selection_flags
+            if color_select.value == "Selection":
+                updated['active_color'] = list(colors)
+
+            source.data = updated
+            update_selection_widgets()
+            return group_id, len(valid_indices)
+
         def create_selection_group(selected_indices: list[int]) -> None:
             nonlocal selection_groups, next_selection_id, suppress_selection_status_update
             """Create a new selection group using the currently visible selection."""
@@ -2220,41 +2348,18 @@ def create_app():
                 selection_create_btn.disabled = True
                 return
 
-            group_id = next_selection_id
-            next_selection_id += 1
-            group_color = pick_group_color()
+            group_id, assigned_count = assign_new_group(visible_selected)
+            if group_id == -1 or assigned_count == 0:
+                selection_status_div.text = "<i>Could not create a group from the current selection.</i>"
+                selection_create_btn.disabled = True
+                return
 
-            assignments = list(source.data.get('selection_group', []))
-            colors = list(source.data.get('selection_color', []))
-            selection_flags = list(source.data.get('selection_on', []))
-
-            for idx in visible_selected:
-                if idx < len(assignments):
-                    assignments[idx] = group_id
-                    colors[idx] = group_color
-                    selection_flags[idx] = True
-
-            for idx, gid in enumerate(assignments):
-                if gid == -1:
-                    colors[idx] = SELECTION_UNASSIGNED_COLOR
-
-            selection_groups.append({'id': group_id, 'color': group_color})
-
-            updated = dict(source.data)
-            updated['selection_group'] = assignments
-            updated['selection_color'] = colors
-            updated['selection_on'] = selection_flags
-            if color_select.value == "Selection":
-                updated['active_color'] = list(colors)
-
-            source.data = updated
             selection_status_div.text = (
-                f"Created selection group with {len(visible_selected)} visible points."
+                f"Created selection group with {assigned_count} visible points."
             )
             selection_create_btn.disabled = True
             suppress_selection_status_update = True
             source.selected.indices = []
-            update_selection_widgets()
 
         def handle_selection_change(attr: str, old: list[int], new: list[int]) -> None:
             nonlocal suppress_selection_status_update
@@ -2296,6 +2401,311 @@ def create_app():
             create_selection_group(list(source.selected.indices))
 
         selection_create_btn.on_click(on_create_selection)
+
+        def _active_selection_group_ids() -> list[int]:
+            """Return the list of non-negative group ids currently checked in the widget."""
+            tags = list(getattr(selection_checks, 'tags', []) or [])
+            active_indices = list(getattr(selection_checks, 'active', []) or [])
+            group_ids: list[int] = []
+            for idx in active_indices:
+                if 0 <= idx < len(tags):
+                    try:
+                        group_id = int(tags[idx])
+                    except (TypeError, ValueError):
+                        continue
+                    if group_id != -1:
+                        group_ids.append(group_id)
+            return group_ids
+
+        def save_selection_group_to_table(
+            kind_label: str,
+            destination_dir: Path,
+            description_text: str,
+        ) -> None:
+            """Persist the currently highlighted selection group to a CSV table."""
+            if color_select.value != "Selection":
+                return
+            if not selection_groups:
+                selection_status_div.text = "<i>No groups are available to save.</i>"
+                return
+            selected_ids = _active_selection_group_ids()
+            if not selected_ids:
+                selection_status_div.text = "<i>Select exactly one group in the list to save.</i>"
+                return
+            if len(selected_ids) > 1:
+                selection_status_div.text = "<i>Please select only one group before saving.</i>"
+                return
+
+            target_group = selected_ids[0]
+            assignments = list(source.data.get('selection_group', []))
+            target_indices = sorted([
+                idx for idx, group_id in enumerate(assignments)
+                if group_id == target_group
+            ])
+            if not target_indices:
+                selection_status_div.text = "<i>The selected group contains no samples.</i>"
+                return
+
+            xcid_values = list(source.data.get('xcid', []))
+            clip_indices = source.data.get('clip_index')
+            if clip_indices is None:
+                selection_status_div.text = (
+                    "<span style='color:#b00;'>Clip index data is unavailable; cannot save group.</span>"
+                )
+                return
+            clip_list = list(clip_indices)
+
+            rows: list[dict[str, Any]] = []
+            skipped = 0
+            for idx in target_indices:
+                if idx >= len(xcid_values) or idx >= len(clip_list):
+                    continue
+                clip_int = normalize_clip_index(clip_list[idx])
+                if clip_int is None:
+                    skipped += 1
+                    continue
+                rows.append({
+                    'xcid': xcid_values[idx],
+                    'clip_index': clip_int,
+                })
+
+            if not rows:
+                selection_status_div.text = (
+                    "<span style='color:#b00;'>No valid clip indices found for this group; nothing was saved.</span>"
+                )
+                return
+
+            try:
+                destination_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                selection_status_div.text = (
+                    f"<span style='color:#b00;'>Failed to prepare {kind_label} directory: {exc}</span>"
+                )
+                return
+
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            base_name = f"group_{target_group}_{timestamp}"
+            output_path = destination_dir / f"{base_name}{GROUP_TABLE_SUFFIX}"
+            counter = 1
+            while output_path.exists():
+                output_path = destination_dir / f"{base_name}_{counter}{GROUP_TABLE_SUFFIX}"
+                counter += 1
+
+            description_to_write = description_text if description_text is not None else ""
+
+            try:
+                pd.DataFrame(rows).to_csv(output_path, index=False)
+                description_path = output_path.with_suffix(".txt")
+                with open(description_path, "w", encoding="utf-8") as desc_file:
+                    desc_file.write(description_to_write.strip() or "No description provided.")
+            except Exception as exc:  # pragma: no cover - file write failure
+                selection_status_div.text = (
+                    f"<span style='color:#b00;'>Failed to save group artifacts: {exc}</span>"
+                )
+                return
+
+            try:
+                relative_display = output_path.relative_to(ROOT_PATH)
+            except ValueError:
+                try:
+                    relative_display = output_path.relative_to(APP_ROOT)
+                except ValueError:
+                    relative_display = output_path
+
+            message = (
+                f"Saved {len(rows)} samples to {relative_display} "
+                f"for {kind_label} (description stored beside CSV)."
+            )
+            if skipped:
+                message += f" Skipped {skipped} sample(s) without clip indices."
+            selection_status_div.text = message
+
+        def load_groups_from_tables(kind_label: str, tables_dir: Path) -> None:
+            """Load all group tables for the current species and recreate them as selections."""
+            if not tables_dir.exists():
+                selection_status_div.text = (
+                    f"<i>No {kind_label} folder found at {tables_dir}.</i>"
+                )
+                return
+
+            table_paths = sorted(
+                path for path in tables_dir.iterdir()
+                if path.is_file() and path.suffix.lower() == GROUP_TABLE_SUFFIX
+            )
+            if not table_paths:
+                selection_status_div.text = (
+                    f"<i>No {GROUP_TABLE_SUFFIX} {kind_label} tables found for {SPECIES_SLUG}.</i>"
+                )
+                return
+
+            clip_indices = source.data.get('clip_index')
+            if clip_indices is None:
+                selection_status_div.text = (
+                    "<span style='color:#b00;'>Clip index data is unavailable; cannot load tables.</span>"
+                )
+                return
+
+            xcid_values = list(source.data.get('xcid', []))
+            clip_list = list(clip_indices)
+            dataset_lookup: dict[tuple[str, int], list[int]] = {}
+            for idx, (xcid_value, clip_value) in enumerate(zip(xcid_values, clip_list)):
+                clip_int = normalize_clip_index(clip_value)
+                if clip_int is None:
+                    continue
+                key = (str(xcid_value), clip_int)
+                dataset_lookup.setdefault(key, []).append(idx)
+
+            if not dataset_lookup:
+                selection_status_div.text = (
+                    "<span style='color:#b00;'>Current dataset is missing clip indices; cannot load tables.</span>"
+                )
+                return
+
+            candidate_groups: list[tuple[Path, list[int]]] = []
+            load_notes: list[str] = []
+            for table_path in table_paths:
+                try:
+                    table_df = pd.read_csv(table_path)
+                except Exception as exc:
+                    load_notes.append(f"{table_path.name}: failed to read ({exc})")
+                    continue
+
+                lower_map = {col.lower(): col for col in table_df.columns}
+                if 'xcid' not in lower_map or 'clip_index' not in lower_map:
+                    load_notes.append(
+                        f"{table_path.name}: missing required 'xcid' or 'clip_index' columns; skipped."
+                    )
+                    continue
+
+                x_series = table_df[lower_map['xcid']]
+                clip_series = table_df[lower_map['clip_index']]
+                indices: list[int] = []
+                seen_local: set[int] = set()
+                for x_value, clip_value in zip(x_series, clip_series):
+                    clip_int = normalize_clip_index(clip_value)
+                    if clip_int is None or pd.isna(x_value):
+                        continue
+                    key = (str(x_value), clip_int)
+                    matches = dataset_lookup.get(key, [])
+                    for idx in matches:
+                        if idx not in seen_local:
+                            seen_local.add(idx)
+                            indices.append(idx)
+
+                if not indices:
+                    load_notes.append(f"{table_path.name}: no matching samples in current dataset.")
+                    continue
+
+                candidate_groups.append((table_path, indices))
+
+            if not candidate_groups:
+                status = (
+                    f"<i>No {kind_label} groups were loaded; no matching samples were found.</i>"
+                )
+                if load_notes:
+                    status += "<br>" + "<br>".join(load_notes)
+                selection_status_div.text = status
+                return
+
+            clear_selection_groups()
+
+            overlapping_indices: set[int] = set()
+            summaries: list[str] = []
+            total_assigned = 0
+
+            for table_path, indices in candidate_groups:
+                current_assignments = list(source.data.get('selection_group', []))
+                overlapping = {
+                    idx for idx in indices
+                    if 0 <= idx < len(current_assignments) and current_assignments[idx] != -1
+                }
+                overlapping_indices.update(overlapping)
+
+                _, assigned_count = assign_new_group(indices)
+                if assigned_count == 0:
+                    continue
+                total_assigned += assigned_count
+                summaries.append(f"{table_path.stem} ({assigned_count})")
+
+            summary_parts = [
+                f"Loaded {len(summaries)} {kind_label} table{'s' if len(summaries) != 1 else ''} "
+                f"({total_assigned} sample{'s' if total_assigned != 1 else ''})."
+            ]
+            if summaries:
+                summary_parts.append("Tables: " + ", ".join(summaries))
+            if overlapping_indices:
+                summary_parts.append(
+                    f"<span style='color:#b35;'>Warning: {len(overlapping_indices)} sample"
+                    f"{'s' if len(overlapping_indices) != 1 else ''} were present in multiple tables; "
+                    "later tables overwrote earlier assignments.</span>"
+                )
+            if load_notes:
+                summary_parts.append("<br>".join(load_notes))
+
+            selection_status_div.text = "<br>".join(summary_parts)
+
+        selection_save_vocal_btn.js_on_event(
+            ButtonClick,
+            CustomJS(args=dict(target=description_request_source), code="""
+                const desc = window.prompt("Enter a description for this vocal type group:");
+                if (desc === null) {
+                    return;
+                }
+                target.data = {
+                    kind: ['vocal'],
+                    description: [desc],
+                    nonce: [Date.now()]
+                };
+            """)
+        )
+        selection_save_dialect_btn.js_on_event(
+            ButtonClick,
+            CustomJS(args=dict(target=description_request_source), code="""
+                const desc = window.prompt("Enter a description for this dialect group:");
+                if (desc === null) {
+                    return;
+                }
+                target.data = {
+                    kind: ['dialect'],
+                    description: [desc],
+                    nonce: [Date.now()]
+                };
+            """)
+        )
+        selection_load_vocal_btn.on_click(
+            lambda: load_groups_from_tables("vocal types", VOCAL_TYPES_DIR)
+        )
+        selection_load_dialect_btn.on_click(
+            lambda: load_groups_from_tables("dialects", DIALECTS_DIR)
+        )
+
+        def handle_description_request(attr: str, old: dict, new: dict) -> None:
+            kinds = new.get('kind') or []
+            descriptions = new.get('description') or []
+            if not kinds or not descriptions:
+                return
+
+            kind_value = str(kinds[0]).strip().lower()
+            description_text = str(descriptions[0])
+            directory_map = {
+                'vocal': ("vocal types", VOCAL_TYPES_DIR),
+                'vocal types': ("vocal types", VOCAL_TYPES_DIR),
+                'dialect': ("dialects", DIALECTS_DIR),
+                'dialects': ("dialects", DIALECTS_DIR),
+            }
+            mapped = directory_map.get(kind_value)
+            if not mapped:
+                selection_status_div.text = (
+                    f"<span style='color:#b00;'>Unknown save target '{kind_value}'.</span>"
+                )
+                description_request_source.data = {'kind': [], 'description': [], 'nonce': []}
+                return
+
+            label, directory = mapped
+            save_selection_group_to_table(label, directory, description_text)
+            description_request_source.data = {'kind': [], 'description': [], 'nonce': []}
+
+        description_request_source.on_change('data', handle_description_request)
 
         print("  All widgets created")
         
@@ -2673,7 +3083,11 @@ def create_app():
             selection_help=selection_help_div,
             selection_clear=selection_clear_btn,
             selection_status=selection_status_div,
-            selection_create=selection_create_btn
+            selection_create=selection_create_btn,
+            selection_save_vocal=selection_save_vocal_btn,
+            selection_save_dialect=selection_save_dialect_btn,
+            selection_load_vocal=selection_load_vocal_btn,
+            selection_load_dialect=selection_load_dialect_btn
         ), code="""
             const d = src.data;
             const mode = sel.value;
@@ -2692,6 +3106,12 @@ def create_app():
             selection_status.text = "";
             selection_create.visible = false;
             selection_create.disabled = true;
+            selection_save_vocal.visible = false;
+            selection_save_vocal.disabled = true;
+            selection_save_dialect.visible = false;
+            selection_save_dialect.disabled = true;
+            selection_load_vocal.visible = false;
+            selection_load_dialect.visible = false;
 
             // Map mode to color column and show appropriate widget
             let from_col;
@@ -2734,6 +3154,12 @@ def create_app():
                     selection_help.visible = true;
                     selection_status.visible = true;
                     selection_create.visible = true;
+                    selection_save_vocal.visible = true;
+                    selection_save_dialect.visible = true;
+                    selection_load_vocal.visible = true;
+                    selection_load_dialect.visible = true;
+                    selection_load_vocal.disabled = false;
+                    selection_load_dialect.disabled = false;
                     let hasVisibleSelection = false;
                     const selected = src.selected.indices ?? [];
                     const alpha = d['alpha'] || [];
@@ -2756,6 +3182,8 @@ def create_app():
                         }
                     }
                     selection_clear.visible = hasGroups;
+                    selection_save_vocal.disabled = !hasGroups;
+                    selection_save_dialect.disabled = !hasGroups;
                     break;
             }
             
@@ -3562,6 +3990,10 @@ def create_app():
             selection_help_div,
             selection_status_div,
             selection_create_btn,
+            selection_save_vocal_btn,
+            selection_save_dialect_btn,
+            selection_load_vocal_btn,
+            selection_load_dialect_btn,
             selection_checks,
             selection_clear_btn,
             season_checks,
