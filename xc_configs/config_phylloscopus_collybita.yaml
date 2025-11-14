@@ -7,7 +7,9 @@ species:
 
 paths:
   root: "/Volumes/Z Slim/zslim_birdcluster"
-  
+  vocal_type_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/phylloscopus_collybita/vocal_types"  # Saved vocal-type selections for this species
+  dialect_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/phylloscopus_collybita/dialects"  # Saved dialect selections for this species
+
 xeno_canto:
   max_recordings: 25000
   include_background: true  # Include recordings where species is in background

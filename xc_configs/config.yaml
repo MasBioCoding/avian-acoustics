@@ -7,6 +7,8 @@ species:
 
 paths:
   root: "/Volumes/Z Slim/zslim_birdcluster" # external drive recommended
+  vocal_type_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/turdus_merula/vocal_types"  # Saved vocal-type selections for this species
+  dialect_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/turdus_merula/dialects"        # Saved dialect selections for this species
   
 xeno_canto:
   max_recordings: 1000
