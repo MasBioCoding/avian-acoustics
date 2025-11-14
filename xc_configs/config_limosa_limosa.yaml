@@ -7,6 +7,8 @@ species:
 
 paths:
   root: "/Volumes/Z Slim/zslim_birdcluster"
+  vocal_type_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/limosa_limosa/vocal_types"  # Saved vocal-type selections for this species
+  dialect_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/limosa_limosa/dialects"        # Saved dialect selections for this species
   
 xeno_canto:
   max_recordings: 1000
