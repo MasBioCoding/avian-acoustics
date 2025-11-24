@@ -34,7 +34,10 @@ birdnet:
   version: "2.4"
   threads: 5        # Good for M1 Max (10 cores total, leave some for system)
   batch_size: 32    # Good for 32GB RAM
+<<<<<<< HEAD
   overlap_sec: 2.0  # Overlap between analysis windows; 2.0 on 3s windows = ~1s hop
+=======
+>>>>>>> 0f3379a (annotation tool)
   # Note: Can increase threads to 10-12 if you want max speed
   # But 8 keeps system responsive for other tasks
 
