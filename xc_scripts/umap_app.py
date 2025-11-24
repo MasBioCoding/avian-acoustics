@@ -8,6 +8,7 @@ To run:
     for me: cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_limosa_limosa.yaml
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_chloris_chloris.yaml
+    bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_phylloscopus_collybita.yaml
 """
 
 import argparse
@@ -964,6 +965,7 @@ def prepare_hover_data(
             'time_color': time_colors,
             'lat_color': latitude_colors,
             'selection_group': [-1] * len(metadata),
+            'selection_group_label': [-1] * len(metadata),
             'selection_color': [SELECTION_UNASSIGNED_COLOR] * len(metadata),
             'selection_on': [True] * len(metadata),
             'active_color': season_colors,  # Start with season colors
@@ -1492,6 +1494,11 @@ def create_app():
             'description': [],
             'nonce': []
         })
+        annotation_request_source = ColumnDataSource(data={
+            'index': [],
+            'group': [],
+            'nonce': []
+        })
         selection_checks = CheckboxGroup(
             labels=["Unassigned (0)"],
             active=[0],
@@ -1565,6 +1572,14 @@ def create_app():
         playlist_panel = Div(width=420, height=320,
                            styles={'border':'1px solid #ddd','padding':'8px','background':'#fff'})
         playlist_panel.text = "<i>Click a point in either plot to list nearby recordings...</i>"
+        playlist_help_div = Div(
+            text=(
+                "<b>Annotation requires no pre-existing groups.</b><br>"
+                "Click a playlist row, then press 1-9 to assign it to a group."
+            ),
+            width=420,
+            styles={'font-size': '11px', 'color': '#444', 'margin-bottom': '6px'}
+        )
         
         # Alpha controls for point transparency
         alpha_toggle = Toggle(label="Full opacity", active=False, width=120)
@@ -2183,9 +2198,58 @@ def create_app():
             name="hdbscan_checks"
         )
 
-        selection_groups: list[dict[str, int | str]] = []
+        SelectionGroup = dict[str, int | str]
+        selection_groups: list[SelectionGroup] = []
         next_selection_id = 0
         suppress_selection_status_update = False
+
+        def _group_label_value(group: SelectionGroup, fallback: int) -> int:
+            """Return the display label for a selection group."""
+            try:
+                label_val = int(group.get('label', fallback))
+                if label_val > 0:
+                    return label_val
+            except (TypeError, ValueError):
+                pass
+            return fallback
+
+        def _next_group_label() -> int:
+            """Pick the smallest positive group label not already in use."""
+            existing = {
+                _group_label_value(group, int(group.get('id', -1)) + 1)
+                for group in selection_groups
+            }
+            candidate = 1
+            while candidate in existing:
+                candidate += 1
+            return candidate
+
+        def _group_color_for_id(group_id: int) -> str:
+            """Return the color associated with a group id."""
+            for group in selection_groups:
+                try:
+                    if int(group.get('id')) == group_id:
+                        return str(group.get('color'))
+                except (TypeError, ValueError):
+                    continue
+            return SELECTION_UNASSIGNED_COLOR
+
+        def _group_label_for_id(group_id: int) -> int:
+            """Return the display label for a group id."""
+            for group in selection_groups:
+                try:
+                    if int(group.get('id')) == group_id:
+                        return _group_label_value(group, group_id + 1)
+                except (TypeError, ValueError):
+                    continue
+            return group_id + 1
+
+        def _find_group_by_label(label: int) -> Optional[SelectionGroup]:
+            """Find a group matching the provided label, if it exists."""
+            for group in selection_groups:
+                if _group_label_value(group, -1) == label:
+                    return group
+            return None
 
         def pick_group_color() -> str:
             """Return a high-contrast color that is not already in use."""
@@ -2207,6 +2271,13 @@ def create_app():
                 group for group in selection_groups
                 if counts.get(int(group['id']), 0) > 0
             ]
+            selection_groups = sorted(
+                selection_groups,
+                key=lambda group: _group_label_value(
+                    group,
+                    int(group.get('id', -1)) + 1,
+                )
+            )
 
             labels: list[str] = []
             tags: list[int] = []
@@ -2224,13 +2295,14 @@ def create_app():
             if group_is_active(-1) or (not selection_groups and unassigned_count > 0):
                 active_indices.append(0)
 
-            for display_index, group in enumerate(selection_groups, start=1):
+            for group in selection_groups:
                 group_id = int(group['id'])
                 count = counts.get(group_id, 0)
-                labels.append(f"Group {display_index} ({count})")
+                label_value = _group_label_value(group, len(labels) + 1)
+                labels.append(f"Group {label_value} ({count})")
                 tags.append(group_id)
                 if group_is_active(group_id):
-                    active_indices.append(display_index)
+                    active_indices.append(len(labels) - 1)
 
             selection_checks.labels = labels
             selection_checks.tags = tags
@@ -2266,6 +2338,7 @@ def create_app():
             current = dict(source.data)
             total = len(current.get('selection_group', []))
             current['selection_group'] = [-1] * total
+            current['selection_group_label'] = [-1] * total
             current['selection_color'] = [SELECTION_UNASSIGNED_COLOR for _ in range(total)]
             current['selection_on'] = [True] * total
             selection_status_div.text = "<i>No active selection.</i>"
@@ -2277,7 +2350,11 @@ def create_app():
             source.selected.indices = []
             update_selection_widgets()
 
-        def assign_new_group(indices: list[int]) -> tuple[int, int]:
+        def assign_new_group(
+            indices: list[int],
+            *,
+            label: Optional[int] = None,
+        ) -> tuple[int, int]:
             """Assign the provided indices to a newly created selection group."""
             nonlocal selection_groups, next_selection_id
             assignments = list(source.data.get('selection_group', []))
@@ -2294,36 +2371,101 @@ def create_app():
 
             colors = list(source.data.get('selection_color', []))
             selection_flags = list(source.data.get('selection_on', []))
+            labels = list(source.data.get('selection_group_label', []))
             if len(colors) < total:
                 colors.extend([SELECTION_UNASSIGNED_COLOR] * (total - len(colors)))
             if len(selection_flags) < total:
                 selection_flags.extend([True] * (total - len(selection_flags)))
+            if len(labels) < total:
+                labels.extend([-1] * (total - len(labels)))
 
             group_id = next_selection_id
             next_selection_id += 1
             group_color = pick_group_color()
+            requested_label = label if label is not None else _next_group_label()
+            group_label = (
+                requested_label
+                if requested_label > 0 and not _find_group_by_label(requested_label)
+                else _next_group_label()
+            )
 
             for idx in valid_indices:
                 assignments[idx] = group_id
                 colors[idx] = group_color
                 selection_flags[idx] = True
+                labels[idx] = group_label
 
             for idx in range(total):
                 if assignments[idx] == -1:
                     colors[idx] = SELECTION_UNASSIGNED_COLOR
+                    labels[idx] = -1
 
-            selection_groups.append({'id': group_id, 'color': group_color})
+            selection_groups.append({'id': group_id, 'color': group_color, 'label': group_label})
 
             updated = dict(source.data)
             updated['selection_group'] = assignments
             updated['selection_color'] = colors
             updated['selection_on'] = selection_flags
+            updated['selection_group_label'] = labels
             if color_select.value == "Selection":
                 updated['active_color'] = list(colors)
 
             source.data = updated
             update_selection_widgets()
             return group_id, len(valid_indices)
+
+        def assign_indices_to_existing_group(
+            group_id: int,
+            indices: list[int],
+        ) -> int:
+            """Assign the provided indices to an existing selection group."""
+            assignments = list(source.data.get('selection_group', []))
+            total = len(assignments)
+            if total == 0:
+                return 0
+
+            valid_indices = sorted({
+                idx for idx in indices
+                if isinstance(idx, int) and 0 <= idx < total
+            })
+            if not valid_indices:
+                return 0
+
+            colors = list(source.data.get('selection_color', []))
+            selection_flags = list(source.data.get('selection_on', []))
+            labels = list(source.data.get('selection_group_label', []))
+            if len(colors) < total:
+                colors.extend([SELECTION_UNASSIGNED_COLOR] * (total - len(colors)))
+            if len(selection_flags) < total:
+                selection_flags.extend([True] * (total - len(selection_flags)))
+            if len(labels) < total:
+                labels.extend([-1] * (total - len(labels)))
+
+            group_color = _group_color_for_id(group_id)
+            group_label = _group_label_for_id(group_id)
+
+            for idx in valid_indices:
+                assignments[idx] = group_id
+                colors[idx] = group_color
+                selection_flags[idx] = True
+                labels[idx] = group_label
+
+            for idx in range(total):
+                if assignments[idx] == -1:
+                    colors[idx] = SELECTION_UNASSIGNED_COLOR
+                    labels[idx] = -1
+
+            updated = dict(source.data)
+            updated['selection_group'] = assignments
+            updated['selection_color'] = colors
+            updated['selection_on'] = selection_flags
+            updated['selection_group_label'] = labels
+            if color_select.value == "Selection":
+                updated['active_color'] = list(colors)
+
+            source.data = updated
+            update_selection_widgets()
+            return len(valid_indices)
 
         def create_selection_group(selected_indices: list[int]) -> None:
             nonlocal selection_groups, next_selection_id, suppress_selection_status_update
@@ -2679,6 +2821,53 @@ def create_app():
             lambda: load_groups_from_tables("dialects", DIALECTS_DIR)
         )
 
+        def handle_annotation_request(attr: str, old: dict, new: dict) -> None:
+            """Assign the selected playlist entry to the requested group label."""
+            indices = new.get('index') or []
+            groups = new.get('group') or []
+            if not indices or not groups:
+                return
+
+            try:
+                target_index = int(indices[0])
+                target_label = int(groups[0])
+            except (TypeError, ValueError):
+                annotation_request_source.data = {'index': [], 'group': [], 'nonce': []}
+                return
+
+            assignments = list(source.data.get('selection_group', []))
+            if target_index < 0 or target_index >= len(assignments):
+                annotation_request_source.data = {'index': [], 'group': [], 'nonce': []}
+                return
+
+            target_label = max(1, min(target_label, 9))
+            existing_group = _find_group_by_label(target_label)
+            assigned = 0
+
+            if existing_group:
+                assigned = assign_indices_to_existing_group(
+                    int(existing_group['id']),
+                    [target_index],
+                )
+                if assigned:
+                    selection_status_div.text = (
+                        f"Annotated 1 sample to Group {target_label}."
+                    )
+            else:
+                _, assigned = assign_new_group(
+                    [target_index],
+                    label=target_label,
+                )
+                if assigned:
+                    selection_status_div.text = (
+                        f"Created Group {target_label} and annotated 1 sample."
+                    )
+
+            if not assigned:
+                selection_status_div.text = "<i>Annotation failed; no valid target.</i>"
+
+            annotation_request_source.data = {'index': [], 'group': [], 'nonce': []}
+
         def handle_description_request(attr: str, old: dict, new: dict) -> None:
             kinds = new.get('kind') or []
             descriptions = new.get('description') or []
@@ -2705,6 +2894,7 @@ def create_app():
             save_selection_group_to_table(label, directory, description_text)
             description_request_source.data = {'kind': [], 'description': [], 'nonce': []}
 
+        annotation_request_source.on_change('data', handle_annotation_request)
         description_request_source.on_change('data', handle_description_request)
 
         print("  All widgets created")
@@ -3425,11 +3615,105 @@ def create_app():
             window._ctx = 'map';
         """))
         
-        playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel), code="""
+        playlist_callback = CustomJS(args=dict(
+            src=source,
+            pane=playlist_panel,
+            annotate=annotation_request_source
+        ), code="""
             const d = src.data;
             const inds = src.selected.indices;
             if (!inds.length) return;
             const i = inds[0];
+            const selectionGroups = d['selection_group'] || [];
+            const selectionLabels = d['selection_group_label'] || [];
+            const selectionColors = d['selection_color'] || [];
+            const DEFAULT_GROUP_COLOR = "#bdbdbd";
+
+            function normalizeHex(color) {
+                if (typeof color !== 'string') return null;
+                const trimmed = color.trim();
+                if (/^#([0-9a-f]{6}|[0-9a-f]{3})$/i.test(trimmed)) {
+                    return trimmed;
+                }
+                return null;
+            }
+
+            function hexToRgb(color) {
+                const hex = normalizeHex(color);
+                if (!hex) return null;
+                let clean = hex.slice(1);
+                if (clean.length === 3) {
+                    clean = clean.split('').map((ch) => ch + ch).join('');
+                }
+                const r = parseInt(clean.slice(0, 2), 16);
+                const g = parseInt(clean.slice(2, 4), 16);
+                const b = parseInt(clean.slice(4, 6), 16);
+                if ([r, g, b].some((v) => Number.isNaN(v))) return null;
+                return { r, g, b };
+            }
+
+            function tintedBackground(color) {
+                const rgb = hexToRgb(color) || hexToRgb(DEFAULT_GROUP_COLOR);
+                if (!rgb) {
+                    return "rgba(189, 189, 189, 0.12)";
+                }
+                return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.14)`;
+            }
+
+            function rowColorInfo(idx) {
+                const groupId = Number.isInteger(selectionGroups[idx]) ? selectionGroups[idx] : -1;
+                const baseColor = (selectionColors[idx] && typeof selectionColors[idx] === 'string')
+                    ? selectionColors[idx]
+                    : DEFAULT_GROUP_COLOR;
+                const labelValue = Number.isInteger(selectionLabels[idx])
+                    ? selectionLabels[idx]
+                    : (groupId >= 0 ? groupId + 1 : -1);
+                return {
+                    groupId,
+                    displayLabel: labelValue,
+                    groupColor: baseColor || DEFAULT_GROUP_COLOR,
+                    groupBg: tintedBackground(baseColor || DEFAULT_GROUP_COLOR),
+                };
+            }
+
+            function groupLabel(labelValue) {
+                return labelValue >= 1 ? `Group ${labelValue}` : "Unassigned";
+            }
+
+            if (annotate && !window._bn_annotation_listener_attached) {
+                window._bn_annotation_listener_attached = true;
+                document.addEventListener('keydown', function(ev) {
+                    if (!ev || typeof ev.key !== 'string') {
+                        return;
+                    }
+                    if (!/^[1-9]$/.test(ev.key)) {
+                        return;
+                    }
+                    const active = document.activeElement;
+                    if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) {
+                        return;
+                    }
+                    if (window._sel_playlist_idx === null || typeof window._sel_playlist_idx === 'undefined') {
+                        return;
+                    }
+                    annotate.data = {
+                        index: [window._sel_playlist_idx],
+                        group: [parseInt(ev.key, 10)],
+                        nonce: [Date.now()]
+                    };
+                });
+            }
+
+            // Reset playlist-based highlight when building a new playlist
+            window._hover_playlist_idx = null;
+            window._sel_playlist_idx = null;
+            window._sel_playlist_el = null;
+            const N_all = d['hl_alpha'].length;
+            for (let k = 0; k < N_all; k++) {
+                d['hl_alpha'][k] = 0;
+                d['hl_width'][k] = 0;
+            }
+            src.change.emit();
             
             // Check if the clicked point is visible
             if (d['alpha'][i] <= 0) {
@@ -3492,8 +3776,47 @@ def create_app():
                 return;
             }
             
-            let html = `<b>${centerInfo}</b> – ${items.length} visible recordings<br>
-                    <div style="max-height:280px; overflow:auto; margin-top:8px;">`;
+            let html = `
+                <style>
+                    .playlist-row {
+                        cursor: pointer;
+                        margin: 4px 0;
+                        padding: 4px 0;
+                        border-bottom: 1px solid #eee;
+                        border-left: 6px solid var(--group-color, ${DEFAULT_GROUP_COLOR});
+                        background: var(--group-bg, #fff);
+                        transition: background-color 120ms ease, border-color 120ms ease, outline 120ms ease;
+                    }
+                    .playlist-row:hover {
+                        outline: 2px solid #ff8c00;
+                        outline-offset: 1px;
+                        background: #fff9e6 !important;
+                        border-left-color: #ff8c00 !important;
+                    }
+                    .playlist-row-selected {
+                        outline: 2px solid #ff8c00;
+                        outline-offset: 1px;
+                        background: #ffe5b3 !important;
+                        border-left-color: #ff8c00 !important;
+                    }
+                    .playlist-row .group-pill {
+                        display: inline-block;
+                        min-width: 72px;
+                        padding: 3px 6px;
+                        margin-right: 6px;
+                        border-radius: 10px;
+                        background: var(--group-color, ${DEFAULT_GROUP_COLOR});
+                        color: #000;
+                        font-size: 10px;
+                        line-height: 1.2;
+                        text-align: center;
+                        font-weight: 600;
+                        box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08);
+                    }
+                </style>
+                <b>${centerInfo}</b> – ${items.length} visible recordings<br>
+                <div style="max-height:280px; overflow:auto; margin-top:8px;">
+            `;
             
             for (const [j, dist] of items) {
                 const xcid = d['xcid'][j];
@@ -3505,15 +3828,69 @@ def create_app():
                 const spectroHtml = spectroSrc
                     ? `<img src="${spectroSrc}" alt="Spectrogram for ${xcid}" style="max-width:160px; border:1px solid #ccc; border-radius:4px;">`
                     : `<div style="color:#888;"><small>No spectrogram</small></div>`;
+                const { displayLabel, groupColor, groupBg } = rowColorInfo(j);
+                const groupText = groupLabel(displayLabel);
                 
                 // Each recording row becomes sensitive to mouse enter/leave events.
-                // When hovering over a playlist item, draw an outline around the corresponding point
-                // in both the UMAP and map plots by updating the hl_alpha and hl_width fields.
-                html += `<div style="margin:4px 0; padding:4px 0; border-bottom:1px solid #eee;"
-                    onmouseenter="var src = Bokeh.documents[0].get_model_by_name('source'); var d = src.data; if(window._hl_idx != null){ d['hl_alpha'][window._hl_idx] = 0; d['hl_width'][window._hl_idx] = 0; } window._hl_idx = ${j}; d['hl_alpha'][${j}] = 1; d['hl_width'][${j}] = 3; src.change.emit();"
-                    onmouseleave="var src = Bokeh.documents[0].get_model_by_name('source'); var d = src.data; if(window._hl_idx != null){ d['hl_alpha'][window._hl_idx] = 0; d['hl_width'][window._hl_idx] = 0; src.change.emit(); window._hl_idx = null; }"
-                >
+                // Hover highlights the corresponding point; click pins the highlight.
+                html += `<div class="playlist-row"
+                        style="--group-color:${groupColor}; --group-bg:${groupBg};"
+                        onmouseenter="
+                            var src = Bokeh.documents[0].get_model_by_name('source');
+                            var d = src.data;
+                            var N = d['hl_alpha'].length;
+                            window._hover_playlist_idx = ${j};
+                            for (var k = 0; k < N; k++) {
+                                var sel = (window._sel_playlist_idx === k);
+                                var hov = (window._hover_playlist_idx === k);
+                                var on = sel || hov;
+                                d['hl_alpha'][k] = on ? 1 : 0;
+                                d['hl_width'][k] = on ? 3 : 0;
+                            }
+                            src.change.emit();
+                        "
+                        onmouseleave="
+                            var src = Bokeh.documents[0].get_model_by_name('source');
+                            var d = src.data;
+                            var N = d['hl_alpha'].length;
+                            window._hover_playlist_idx = null;
+                            for (var k = 0; k < N; k++) {
+                                var sel = (window._sel_playlist_idx === k);
+                                var on = sel;
+                                d['hl_alpha'][k] = on ? 1 : 0;
+                                d['hl_width'][k] = on ? 3 : 0;
+                            }
+                            src.change.emit();
+                        "
+                        onclick="
+                            var src = Bokeh.documents[0].get_model_by_name('source');
+                            var d = src.data;
+                            var N = d['hl_alpha'].length;
+
+                            // Update row selection styling
+                            if (window._sel_playlist_el && window._sel_playlist_el !== this) {
+                                window._sel_playlist_el.classList.remove('playlist-row-selected');
+                            }
+                            this.classList.add('playlist-row-selected');
+                            window._sel_playlist_el = this;
+
+                            // Pin the selected index
+                            window._sel_playlist_idx = ${j};
+
+                            // Recompute highlight to combine selection + current hover
+                            for (var k = 0; k < N; k++) {
+                                var sel = (window._sel_playlist_idx === k);
+                                var hov = (window._hover_playlist_idx === k);
+                                var on = sel || hov;
+                                d['hl_alpha'][k] = on ? 1 : 0;
+                                d['hl_width'][k] = on ? 3 : 0;
+                            }
+                            src.change.emit();
+                        "
+                    >
+                    
                     <div style="display:flex; align-items:flex-start; gap:10px;">
+                        <div class="group-pill" title="${groupText}">${groupText}</div>
                         <button onclick="(function(u){
                             if(!u) return;
                             if(window._BN_audio) window._BN_audio.pause();
@@ -3532,6 +3909,7 @@ def create_app():
             html += '</div>';
             pane.text = html;
         """)
+        
         source.selected.js_on_change('indices', playlist_callback)
         
         # Alpha toggle callback - instant change
@@ -4020,8 +4398,13 @@ def create_app():
         )
         geoshift_layout = row(geoshift_box, geoshift_plot_column)
         controls = row(color_select, filter_widgets, hover_toggle, test_audio_btn, umap_params_box, hdbscan_params_box, geoshift_layout)
-        
-        plots = row(umap_plot, map_plot, playlist_panel)
+        playlist_column = column(
+            playlist_help_div,
+            playlist_panel,
+            width=440,
+        )
+
+        plots = row(umap_plot, map_plot, playlist_column)
         date_bounds_controls = row(date_bounds_slider, reset_bounds_btn)
         
         layout = column(

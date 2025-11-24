@@ -25,6 +25,7 @@ Usage:
     python xc_scripts/download_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/download_species.py --config xc_configs/config_cettia_cetti.yaml
     python xc_scripts/download_species.py --config xc_configs/config.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_troglodytes_troglodytes.yaml
 """
 
 
