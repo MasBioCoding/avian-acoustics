@@ -11,7 +11,6 @@ Usage:
     python xc_scripts/download_species.py --config xc_configs/config_limosa_limosa.yaml
     python xc_scripts/download_species.py --config xc_configs/config_emberiza_citrinella.yaml
     python xc_scripts/download_species.py --config xc_configs/config_sylvia_atricapilla.yaml
-    python xc_scripts/download_species.py --config xc_configs/config_fringilla_coelebs.yaml
     python xc_scripts/download_species.py --config xc_configs/config_turdus_merula.yaml
     python xc_scripts/download_species.py --config xc_configs/config_parus_major.yaml
     python xc_scripts/download_species.py --config xc_configs/config_passer_montanus.yaml
@@ -25,6 +24,21 @@ Usage:
     python xc_scripts/download_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/download_species.py --config xc_configs/config_cettia_cetti.yaml
     python xc_scripts/download_species.py --config xc_configs/config.yaml
+    
+    python xc_scripts/download_species.py --config xc_configs/config_fringilla_coelebs.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_prunella_modularis.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_carduelis_carduelis.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_emberiza_calandra.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_erithacus_rubecula.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_turdus_migratorius.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_turdus_philomelos.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_sturnus_vulgaris.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_troglodytes_troglodytes.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_regulus_ignicapilla.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_regulus_regulus.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_linaria_cannabina.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_turdus_iliacus.yaml
+
 """
 
 

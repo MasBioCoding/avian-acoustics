@@ -7,6 +7,20 @@ spectrogram image per clip into `<root>/spectrograms/<species_slug>`.
 
 Typical usage:
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_cettia_cetti.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_phylloscopus_trochilus.yaml
+    
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_asio_otus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_buteo_buteo.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_corvus_corax.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_curruca_communis.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_parus_major.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_passer_domesticus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_passer_montanus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_strix_aluco.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_sylvia_atricapilla.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_turdus_merula.yaml
+    
 
 The configuration file is shared with the rest of the pipeline. You can
 override the clips or output directory via command-line arguments when
