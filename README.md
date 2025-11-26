@@ -67,7 +67,7 @@ Configuration lives in `xc_configs/`. Start from `config.yaml` or one of the spe
 - `paths.root`: absolute path where downloads, clips, and embeddings are stored.
 - `xeno_canto`: API parameters such as `max_recordings`, `include_background`, and extra query filters (e.g., `len:3-200`). Max recordings can exceed available recordings without issue. In my experience 5k raw files, assuming maxlen 180, will be around ... 20GB, and subsequent clips, assuming max 5 per rec, will be around 4GB
 - `processing`: clip duration, confidence thresholds, and whether to delete originals after clipping.
-- `birdnet`: CLI thread/batch sizing for your hardware. For a 10 core M1MAX apple sillicon I use 8 cores for maximum speed, 4-5 cores if I want to do other tasks during processing. thread size i keep 32, have not played around with it.
+- `birdnet`: CLI thread/batch sizing and window overlap. Set `overlap_sec: 2.0` to slide BirdNET's default 3s window every ~1s; lower values reduce overlap if you need fewer detections. For a 10 core M1MAX apple sillicon I use 8 cores for maximum speed, 4-5 cores if I want to do other tasks during processing. thread size i keep 32, have not played around with it.
 - `analysis`: UMAP and clustering defaults consumed by the visualization.
 - `audio`: host/port for the HTTP server that makes clips playable inside the Bokeh app.
 
@@ -82,6 +82,8 @@ https://xeno-canto.org/collection/species/all?area=europe
 All commands below assume `conda activate birdnetcluster1` and that you're inside the repository root.
 
 1. **Download Xeno-Canto audio**  
+   Set `XENO_CANTO_API_KEY` (or add `xeno_canto.api_key` in the config) before
+   running; API v3 rejects requests without a key.  
    ```bash
    python xc_scripts/download_species.py --config xc_configs/config_turdus_merula.yaml
    ```  

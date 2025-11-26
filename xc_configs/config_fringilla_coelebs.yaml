@@ -7,6 +7,9 @@ species:
 
 paths:
   root: "/Volumes/Z Slim/zslim_birdcluster"
+  vocal_type_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/fringilla_coelebs/vocal_types"  # Saved vocal-type selections for this species
+  dialect_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/fringilla_coelebs/dialects"        # Saved dialect selections for this species
+  
   
 xeno_canto:
   max_recordings: 36000
@@ -14,6 +17,10 @@ xeno_canto:
   extra_query: "len:3-200"  # Additional XC filters (recording length 3-200 seconds)
   timeout: 15
   pause: 0.01  # Seconds between API calls (be polite!)
+  per_page: 300  # API v3 supports 50-500 results per page; higher = fewer requests
+  api_key_env_var: "XENO_CANTO_API_KEY"  # Prefer setting the key via this env var 
+  # use export XENO_CANTO_API_KEY="your-key-here" in your shell (terminal)
+  api_key: null  # Optional fallback; avoid committing personal keys to git     
 
 processing:
   max_clips_per_recording: 5  # Max clips to extract per recording
@@ -31,8 +38,8 @@ birdnet:
 
 analysis:
   # UMAP parameters
-  umap_n_neighbors: 10      # Number of neighbors (5-50, lower=local, higher=global structure)
-  umap_min_dist: 0.0        # Minimum distance between points (0.0-1.0, lower=tighter clusters)
+  umap_n_neighbors: 25      # Number of neighbors (5-50, lower=local, higher=global structure)
+  umap_min_dist: 0.001        # Minimum distance between points (0.0-1.0, lower=tighter clusters)
   umap_n_components: 2      # Number of dimensions for output (2 for 2D visualization)
   
   # KMeans clustering parameters  
