@@ -8,6 +8,8 @@ To run:
     for me: cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_limosa_limosa.yaml
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_chloris_chloris.yaml
+    bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_regulus_ignicapilla.yaml
+    bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_regulus_regulus.yaml
 """
 
 import argparse
@@ -24,9 +26,8 @@ from importlib_metadata import metadata
 import pandas as pd
 import numpy as np
 import umap
-from sklearn.cluster import KMeans, DBSCAN
+from sklearn.cluster import DBSCAN
 from sklearn.neighbors import BallTree
-from sklearn.metrics import silhouette_score
 import traceback
 import colorsys
 from collections import Counter
@@ -124,8 +125,6 @@ def load_config(config_path: Optional[Path] = None):
             "umap_n_neighbors": 10,
             "umap_min_dist": 0.0,
             "umap_n_components": 2,
-            "kmeans_clusters": 4,
-            "kmeans_n_init": 10,
             "point_size": 10,
             "point_alpha": 0.3
         },
@@ -371,8 +370,6 @@ print(f"  Analysis parameters:")
 print(f"    UMAP neighbors: {ANALYSIS_PARAMS.get('umap_n_neighbors', 10)}")
 print(f"    UMAP min_dist: {ANALYSIS_PARAMS.get('umap_min_dist', 0.0)}")
 print(f"    UMAP n_components: {ANALYSIS_PARAMS.get('umap_n_components', 2)}")
-print(f"    KMeans clusters: {ANALYSIS_PARAMS.get('kmeans_clusters', 4)}")
-print(f"    KMeans n_init: {ANALYSIS_PARAMS.get('kmeans_n_init', 10)}")
 print(f"    Point size: {ANALYSIS_PARAMS.get('point_size', 10)}")
 print(f"    Point alpha: {ANALYSIS_PARAMS.get('point_alpha', 0.3)}")
 
@@ -485,6 +482,40 @@ def _interpolate_color(start_color: str, end_color: str, fraction: float) -> str
     return _rgb_to_hex(interpolated)
 
 
+def _gradient_by_series(values: pd.Series) -> list[str]:
+    """Return gradient colors (yellow→green→blue) for a numeric Series."""
+
+    numeric_values = pd.to_numeric(values, errors='coerce')
+    valid = numeric_values.notna()
+
+    if not valid.any():
+        return ["#999999"] * len(values)
+
+    min_val = float(numeric_values[valid].min())
+    max_val = float(numeric_values[valid].max())
+
+    if np.isclose(max_val, min_val):
+        normalized = pd.Series([0.5] * len(values))
+    else:
+        normalized = (numeric_values - min_val) / (max_val - min_val)
+
+    colors: list[str] = []
+    for value, is_valid in zip(normalized, valid):
+        if not is_valid:
+            colors.append("#999999")
+            continue
+
+        val = float(np.clip(value, 0.0, 1.0))
+        if val <= 0.5:
+            local_fraction = val / 0.5 if val > 0 else 0.0
+            colors.append(_interpolate_color('#ffff00', '#00ff00', local_fraction))
+        else:
+            local_fraction = (val - 0.5) / 0.5
+            colors.append(_interpolate_color('#00ff00', '#0000ff', local_fraction))
+
+    return colors
+
+
 def lonlat_to_web_mercator(lon_values, lat_values):
     """Convert longitude/latitude pairs to Web Mercator coordinates."""
     lon_series = pd.Series(lon_values)
@@ -507,35 +538,13 @@ def lonlat_to_web_mercator(lon_values, lat_values):
 def latitude_to_colors(latitudes: pd.Series) -> list[str]:
     """Return gradient colors (yellow→green→blue) based on latitude values."""
 
-    numeric_lat = pd.to_numeric(latitudes, errors='coerce')
-    valid = numeric_lat.notna()
+    return _gradient_by_series(latitudes)
 
-    if not valid.any():
-        return ["#999999"] * len(latitudes)
 
-    min_lat = float(numeric_lat[valid].min())
-    max_lat = float(numeric_lat[valid].max())
+def longitude_to_colors(longitudes: pd.Series) -> list[str]:
+    """Return gradient colors (yellow→green→blue) based on longitude values."""
 
-    if np.isclose(max_lat, min_lat):
-        normalized = pd.Series([0.5] * len(latitudes))
-    else:
-        normalized = (numeric_lat - min_lat) / (max_lat - min_lat)
-
-    colors: list[str] = []
-    for value, is_valid in zip(normalized, valid):
-        if not is_valid:
-            colors.append("#999999")
-            continue
-
-        val = float(np.clip(value, 0.0, 1.0))
-        if val <= 0.5:
-            local_fraction = val / 0.5 if val > 0 else 0.0
-            colors.append(_interpolate_color('#ffff00', '#00ff00', local_fraction))
-        else:
-            local_fraction = (val - 0.5) / 0.5
-            colors.append(_interpolate_color('#00ff00', '#0000ff', local_fraction))
-
-    return colors
+    return _gradient_by_series(longitudes)
 
 def update_stats_display(metadata, stats_div, zoom_level, date_slider=None, source=None):
     """Update the statistics display with UMAP and selection info"""
@@ -725,7 +734,7 @@ def load_data():
         raise
 
 def compute_initial_umap(embeddings_array, metadata, n_neighbors=None, min_dist=None):
-    """Compute initial UMAP projection and clustering"""
+    """Compute initial UMAP projection"""
     print("\n" + "-" * 40)
     print("COMPUTING INITIAL UMAP...")
     
@@ -754,24 +763,6 @@ def compute_initial_umap(embeddings_array, metadata, n_neighbors=None, min_dist=
             )
             state.projection = state.mapper.fit_transform(embeddings_array)
             print(f"  UMAP projection shape: {state.projection.shape}")
-            
-            # K-means clustering
-            print("  Computing K-means clustering...")
-            n_clusters = ANALYSIS_PARAMS.get("kmeans_clusters", 4)
-            n_init = ANALYSIS_PARAMS.get("kmeans_n_init", 10)
-            
-            print(f"    n_clusters: {n_clusters}")
-            print(f"    n_init: {n_init}")
-            
-            kmeans = KMeans(n_clusters=n_clusters, n_init=n_init)
-            km_labels = kmeans.fit_predict(state.projection)
-            
-            metadata['kmeans3'] = km_labels
-            metadata['kmeans3_str'] = metadata['kmeans3'].astype(str)
-            
-            sil = silhouette_score(state.projection, km_labels)
-            print(f"  Silhouette score: {sil:.3f}")
-            
             print("UMAP computation complete")
         else:
             print("  Using existing UMAP projection")
@@ -792,7 +783,7 @@ def prepare_hover_data(
     metadata: pd.DataFrame,
     projection: np.ndarray,
     point_alpha: Optional[float] = None,
-) -> Tuple[dict[str, list], list[str]]:
+) -> dict[str, list]:
     """Prepare data for hover tooltips and interactions"""
     print("\n" + "-" * 40)
     print("PREPARING HOVER DATA...")
@@ -860,22 +851,8 @@ def prepare_hover_data(
             "Unknown": "#999999"
         }
         
-        cluster_palette = ["#66c2a5", "#8da0cb", "#fc8d62", "#e78ac3", 
-                          "#a6d854", "#ffd92f", "#a1d99b", "#9ecae1"]
-        
-        # Assign colors for different categories
-        factors = sorted(metadata['kmeans3_str'].unique())
-        print(f"    Cluster factors: {factors}")
-        
-        cluster_color_map = {lab: cluster_palette[i % len(cluster_palette)] 
-                            for i, lab in enumerate(factors)}
-        
         # Season colors
         season_colors = [season_palette.get(s, "#999999") for s in season_arr]
-        
-        # Cluster colors
-        cluster_colors = [cluster_color_map.get(str(c), "#999999") 
-                         for c in metadata['kmeans3_str']]
         
         # Sex colors
         sex_palette = {"M": "#4B8BBE", "F": "#F07C7C", "?": "#A0A0A0"}
@@ -898,6 +875,7 @@ def prepare_hover_data(
 
         # Latitude gradient colors (yellow -> green -> blue)
         latitude_colors = latitude_to_colors(metadata['lat'])
+        longitude_colors = longitude_to_colors(metadata['lon'])
         
         # Parse time to hours for filtering
         time_hours = []
@@ -947,8 +925,6 @@ def prepare_hover_data(
             'month': months.tolist(),
             'ts': ts_ms.tolist(),
             'valid_date': valid.tolist(),
-            'kmeans3': metadata['kmeans3'].tolist(),
-            'kmeans3_str': metadata['kmeans3_str'].tolist(),
             'hdbscan_on': [True] * len(metadata),
             'dedupe_on': [True] * len(metadata),
             'audio_url': metadata['audio_url'].tolist() if 'audio_url' in metadata else [''] * len(metadata),
@@ -958,18 +934,17 @@ def prepare_hover_data(
             'season': season_arr.tolist(),
             'season_on': season_on,
             'season_color': season_colors,
-            'cluster_color': cluster_colors,
             'sex_color': sex_colors,
             'type_color': type_colors,
             'time_color': time_colors,
             'lat_color': latitude_colors,
+            'lon_color': longitude_colors,
             'selection_group': [-1] * len(metadata),
             'selection_color': [SELECTION_UNASSIGNED_COLOR] * len(metadata),
             'selection_on': [True] * len(metadata),
             'active_color': season_colors,  # Start with season colors
             'alpha': alpha.tolist(),
             'alpha_base': alpha.tolist(),
-            'cluster_on': [True] * len(metadata),
             'sex_on': [True] * len(metadata),
             'type_on': [True] * len(metadata),
             'time_on': [True] * len(metadata),
@@ -981,7 +956,7 @@ def prepare_hover_data(
         }
 
         print(f"Data dictionary created with {len(data)} keys")
-        return data, factors
+        return data
         
     except Exception as e:
         print(f"  ERROR preparing data: {e}")
@@ -1063,7 +1038,6 @@ def create_umap_plot(source):
             ("season", "@season"),
             ("date", "@date"),
             ("time", "@time"),
-            ("cluster", "@kmeans3_str"),
             ("sex", "@sex"),
             ("type", "@type"),
             ("lat, lon", "@lat, @lon")
@@ -1177,7 +1151,7 @@ def create_app():
         point_alpha_default = max(
             min(float(ANALYSIS_PARAMS.get('point_alpha', 0.3)), 1.0), 0.01
         )
-        data, factors = prepare_hover_data(
+        data = prepare_hover_data(
             metadata, projection, point_alpha=point_alpha_default
         )
         source = ColumnDataSource(data=data)
@@ -1345,7 +1319,6 @@ def create_app():
                         arr = arr[:n]
                 return [bool(item) for item in arr]
 
-            cluster_on = _normalize(data_dict.get('cluster_on'), True)
             hdbscan_on = _normalize(data_dict.get('hdbscan_on'), True)
             sex_on = _normalize(data_dict.get('sex_on'), True)
             type_on = _normalize(data_dict.get('type_on'), True)
@@ -1356,8 +1329,7 @@ def create_app():
 
             for idx in range(n):
                 if (
-                    cluster_on[idx]
-                    and hdbscan_on[idx]
+                    hdbscan_on[idx]
                     and sex_on[idx]
                     and type_on[idx]
                     and time_on[idx]
@@ -1397,7 +1369,6 @@ def create_app():
         
         # Get unique values for categorical filters
         unique_seasons = sorted(set(source.data['season']))
-        unique_clusters = sorted(set(source.data['kmeans3_str']))
         unique_sex = sorted(set(source.data['sex']))
         unique_type = sorted(set(source.data['type']))
 
@@ -1411,14 +1382,6 @@ def create_app():
             name="season_checks"
         )
 
-        # Cluster checkboxes
-        cluster_checks = CheckboxGroup(
-            labels=unique_clusters,
-            active=list(range(len(unique_clusters))),
-            visible=False,
-            name="cluster_checks"
-        )
-        
         # Sex checkboxes
         sex_checks = CheckboxGroup(
             labels=unique_sex,
@@ -1517,7 +1480,16 @@ def create_app():
         color_select = Select(
             title="Color by",
             value="Season",
-            options=["Season", "KMeans", "HDBSCAN", "Sex", "Type", "Time of Day", "Latitude", "Selection"]
+            options=[
+                "Season",
+                "HDBSCAN",
+                "Sex",
+                "Type",
+                "Time of Day",
+                "Latitude",
+                "Longitude",
+                "Selection",
+            ],
         )
         
         # --- SLIDERS ---
@@ -2732,7 +2704,6 @@ def create_app():
             const season = d['season'];
             const alpha_base = d['alpha_base'];
             const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(season.length).fill(true);
             const hdbscan_on = d['hdbscan_on'] || new Array(season.length).fill(true);  // ADD THIS
             const sex_on = d['sex_on'] || new Array(season.length).fill(true);
             const type_on = d['type_on'] || new Array(season.length).fill(true);
@@ -2745,7 +2716,7 @@ def create_app():
                 const season_visible = active.has(String(season[i]));
                 d['season_on'][i] = season_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                if (hdbscan_on[i] && sex_on[i] && type_on[i] &&
                     time_on[i] && selection_on[i] && dedupe_on[i] && season_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
@@ -2772,64 +2743,6 @@ def create_app():
         """)
         season_checks.js_on_change('active', season_callback)
         
-        # Cluster checkbox callback - reads labels dynamically
-        cluster_callback = CustomJS(args=dict(src=source, cb=cluster_checks,
-                                   umap_view=umap_view, map_view=map_view), code="""
-            const d = src.data;
-            const labs = cb.labels;  // Read current labels from widget
-            const active_indices = cb.active;
-            
-            // Build set of active labels
-            const active = new Set();
-            for (let idx of active_indices) {
-                if (idx < labs.length) {
-                    active.add(labs[idx]);
-                }
-            }
-            
-            const km = d['kmeans3_str'];
-            const alpha_base = d['alpha_base'];
-            const alpha = d['alpha'];
-            const hdbscan_on = d['hdbscan_on'] || new Array(km.length).fill(true);
-            const sex_on = d['sex_on'] || new Array(km.length).fill(true);
-            const type_on = d['type_on'] || new Array(km.length).fill(true);
-            const time_on = d['time_on'] || new Array(km.length).fill(true);
-            const season_on = d['season_on'] || new Array(km.length).fill(true);
-            const selection_on = d['selection_on'] || new Array(km.length).fill(true);
-            const dedupe_on = d['dedupe_on'] || new Array(km.length).fill(true);
-
-            const n = km.length;
-            for (let i = 0; i < n; i++) {
-                const cluster_visible = active.has(String(km[i]));
-                d['cluster_on'][i] = cluster_visible;
-
-                if (cluster_visible && hdbscan_on[i] && season_on[i] && sex_on[i] &&
-                    type_on[i] && time_on[i] && selection_on[i] && dedupe_on[i]) {
-                    alpha[i] = alpha_base[i];
-                } else {
-                    alpha[i] = 0.0;
-                }
-            }
-            
-            // Update views at the end
-            if (typeof umap_view !== 'undefined' && umap_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                umap_view.filter.booleans = new_booleans;
-            }
-            if (typeof map_view !== 'undefined' && map_view.filter) {
-                const new_booleans = [];
-                for (let i = 0; i < n; i++) {
-                    new_booleans.push(alpha[i] > 0);
-                }
-                map_view.filter.booleans = new_booleans;
-            }
-            src.change.emit();
-        """)
-        cluster_checks.js_on_change('active', cluster_callback)
-
         # Sex checkbox callback - reads labels dynamically
         sex_callback = CustomJS(args=dict(src=source, cb=sex_checks,
                                    umap_view=umap_view, map_view=map_view), code="""
@@ -2848,7 +2761,6 @@ def create_app():
             const sex = d['sex'];
             const alpha_base = d['alpha_base'];
             const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(sex.length).fill(true);
             const hdbscan_on = d['hdbscan_on'] || new Array(sex.length).fill(true);
             const type_on = d['type_on'] || new Array(sex.length).fill(true);
             const time_on = d['time_on'] || new Array(sex.length).fill(true);
@@ -2862,7 +2774,7 @@ def create_app():
                 const sex_visible = active.has(String(sex[i]));
                 d['sex_on'][i] = sex_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_visible && type_on[i] &&
+                if (hdbscan_on[i] && sex_visible && type_on[i] &&
                     time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
@@ -2907,7 +2819,6 @@ def create_app():
             const type = d['type'];
             const alpha_base = d['alpha_base'];
             const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(type.length).fill(true);
             const hdbscan_on = d['hdbscan_on'] || new Array(type.length).fill(true);
             const sex_on = d['sex_on'] || new Array(type.length).fill(true);
             const time_on = d['time_on'] || new Array(type.length).fill(true);
@@ -2920,7 +2831,7 @@ def create_app():
                 const type_visible = active.has(String(type[i]));
                 d['type_on'][i] = type_visible;
 
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_visible &&
+                if (hdbscan_on[i] && sex_on[i] && type_visible &&
                     time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
@@ -2956,7 +2867,6 @@ def create_app():
             const alpha = d['alpha'];
             
             // Add fallback initialization for all _on fields
-            const cluster_on = d['cluster_on'] || new Array(time_hour.length).fill(true);
             const hdbscan_on = d['hdbscan_on'] || new Array(time_hour.length).fill(true);
             const sex_on = d['sex_on'] || new Array(time_hour.length).fill(true);
             const type_on = d['type_on'] || new Array(time_hour.length).fill(true);
@@ -2975,7 +2885,7 @@ def create_app():
                 d['time_on'][i] = time_visible;
                 
                 // Alpha is visible only if ALL filters allow it
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                if (hdbscan_on[i] && sex_on[i] && type_on[i] &&
                     time_visible && season_on[i] && selection_on[i] && dedupe_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
@@ -3024,7 +2934,6 @@ def create_app():
                 }
             }
 
-            const cluster_on = d['cluster_on'] || new Array(assignments.length).fill(true);
             const hdbscan_on = d['hdbscan_on'] || new Array(assignments.length).fill(true);
             const sex_on = d['sex_on'] || new Array(assignments.length).fill(true);
             const type_on = d['type_on'] || new Array(assignments.length).fill(true);
@@ -3041,7 +2950,7 @@ def create_app():
                 }
                 const selection_visible = active_groups.has(group_id);
                 selection_on[i] = selection_visible;
-                if (selection_visible && cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                if (selection_visible && hdbscan_on[i] && sex_on[i] && type_on[i] &&
                     time_on[i] && season_on[i] && dedupe_on[i] && alpha_base[i] > 0) {
                     alpha[i] = alpha_base[i];
                 } else {
@@ -3074,7 +2983,6 @@ def create_app():
             src=source,
             sel=color_select,
             season_checks=season_checks,
-            cluster_checks=cluster_checks,
             hdbscan_checks=hdbscan_checks,  # Add this
             sex_checks=sex_checks,
             type_checks=type_checks,
@@ -3094,7 +3002,6 @@ def create_app():
 
             // Hide all filter widgets first
             season_checks.visible = false;
-            cluster_checks.visible = false;
             hdbscan_checks.visible = false;
             sex_checks.visible = false;
             type_checks.visible = false;
@@ -3120,10 +3027,6 @@ def create_app():
                     from_col = "season_color";
                     season_checks.visible = true;
                     break;
-                case "KMeans":
-                    from_col = "cluster_color";
-                    cluster_checks.visible = true;
-                    break;
                 case "HDBSCAN":
                     if (d['hdbscan_color']) {
                         from_col = "hdbscan_color";
@@ -3147,6 +3050,9 @@ def create_app():
                     break;
                 case "Latitude":
                     from_col = "lat_color";
+                    break;
+                case "Longitude":
+                    from_col = "lon_color";
                     break;
                 case "Selection":
                     from_col = "selection_color";
@@ -3267,7 +3173,6 @@ def create_app():
             const ts = d['ts'];
             const alpha_base = d['alpha_base'];
             const alpha = d['alpha'];
-            const cluster_on = d['cluster_on'] || new Array(ts.length).fill(true);
             const hdbscan_on = d['hdbscan_on'] || new Array(ts.length).fill(true);
             const sex_on = d['sex_on'] || new Array(ts.length).fill(true);
             const type_on = d['type_on'] || new Array(ts.length).fill(true);
@@ -3289,7 +3194,7 @@ def create_app():
                 alpha_base[i] = base;
 
                 // Final alpha depends on ALL filters
-                if (cluster_on[i] && hdbscan_on[i] && sex_on[i] && type_on[i] &&
+                if (hdbscan_on[i] && sex_on[i] && type_on[i] &&
                     time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i] && base > 0) {
                     alpha[i] = base;
                 } else {
@@ -3649,14 +3554,6 @@ def create_app():
             )
             new_projection = subset_mapper.fit_transform(subset_embeddings)
             
-            # Recompute clusters (this should also change when redefining kmeans nclusters)
-            if len(actual_indices) >= 4:
-                n_clusters = min(4, len(actual_indices))
-                kmeans = KMeans(n_clusters=n_clusters, n_init=10)
-                new_labels = kmeans.fit_predict(new_projection)
-                subset_meta['kmeans3'] = new_labels
-                subset_meta['kmeans3_str'] = subset_meta['kmeans3'].astype(str)
-            
             # Update state (not sure yet how indices play into this)
             state.current_embeddings = subset_embeddings
             state.current_meta = subset_meta
@@ -3666,24 +3563,21 @@ def create_app():
             
             # Update visualization
             base_alpha = 1.0 if alpha_toggle.active else get_spinner_alpha()
-            new_data, new_factors = prepare_hover_data(
+            new_data = prepare_hover_data(
                 subset_meta, new_projection, point_alpha=base_alpha
             )
             
             # Get new unique values             
             new_unique_seasons = sorted(set(new_data['season']))
-            new_unique_clusters = sorted(set(new_data['kmeans3_str']))
             new_unique_sex = sorted(set(new_data['sex']))
             new_unique_type = sorted(set(new_data['type']))
             
             print(f"[ZOOM] New seasons: {new_unique_seasons}")
-            print(f"[ZOOM] New factors: {new_factors}")
             print(f"[ZOOM] New sex values: {new_unique_sex}")
             print(f"[ZOOM] New type values: {new_unique_type}")
             
             # Reset all filter states to True
             new_data['season_on'] = [True] * len(new_data['x'])
-            new_data['cluster_on'] = [True] * len(new_data['x'])
             new_data['hdbscan_on'] = [True] * len(new_data['x'])
             new_data['sex_on'] = [True] * len(new_data['x'])
             new_data['type_on'] = [True] * len(new_data['x'])
@@ -3702,9 +3596,6 @@ def create_app():
             # Update filter widgets with new unique values and reset to all active
             season_checks.labels = new_unique_seasons
             season_checks.active = list(range(len(new_unique_seasons)))
-
-            cluster_checks.labels = new_unique_clusters
-            cluster_checks.active = list(range(len(new_unique_clusters)))
             
             sex_checks.labels = new_unique_sex
             sex_checks.active = list(range(len(new_unique_sex)))
@@ -3712,7 +3603,7 @@ def create_app():
             type_checks.labels = new_unique_type
             type_checks.active = list(range(len(new_unique_type)))
 
-            print(f"[ZOOM] Updated widgets - seasons: {len(new_unique_seasons)}, clusters: {len(new_unique_clusters)}, sex: {len(new_unique_sex)}, type: {len(new_unique_type)}")
+            print(f"[ZOOM] Updated widgets - seasons: {len(new_unique_seasons)}, sex: {len(new_unique_sex)}, type: {len(new_unique_type)}")
 
             # Update displays
             update_stats_display(subset_meta, stats_div, 1, source=source)
@@ -3747,25 +3638,22 @@ def create_app():
             
             # Prepare full data with original factors
             base_alpha = 1.0 if alpha_toggle.active else get_spinner_alpha()
-            new_data, original_factors = prepare_hover_data(
+            new_data = prepare_hover_data(
                 state.current_meta, state.projection, point_alpha=base_alpha
             )
             
             # Get unique values for the full dataset
-            original_unique_seasons = sorted(set(new_data['season']))            
-            original_unique_clusters = sorted(set(new_data['kmeans3_str']))
+            original_unique_seasons = sorted(set(new_data['season']))
             original_unique_sex = sorted(set(new_data['sex']))
             original_unique_type = sorted(set(new_data['type']))
             original_unique_seasons = sorted(set(new_data['season']))
 
             print(f"[RESET] Original seasons: {original_unique_seasons}")
-            print(f"[RESET] Original factors: {original_factors}")
             print(f"[RESET] Original sex values: {original_unique_sex}")
             print(f"[RESET] Original type values: {original_unique_type}")
             
             # Reset all filter states to True for full dataset
             new_data['season_on'] = [True] * len(new_data['x'])
-            new_data['cluster_on'] = [True] * len(new_data['x'])
             new_data['hdbscan_on'] = [True] * len(new_data['x'])
             new_data['sex_on'] = [True] * len(new_data['x'])
             new_data['type_on'] = [True] * len(new_data['x'])
@@ -3779,9 +3667,6 @@ def create_app():
             # Reset filter widgets with original values and set all active
             season_checks.labels = original_unique_seasons
             season_checks.active = list(range(len(original_unique_seasons)))
-    
-            cluster_checks.labels = original_unique_clusters
-            cluster_checks.active = list(range(len(original_unique_clusters)))
 
             sex_checks.labels = original_unique_sex
             sex_checks.active = list(range(len(original_unique_sex)))
@@ -3792,7 +3677,7 @@ def create_app():
             # Reset time range slider to full range
             time_range_slider.value = (0, 24)
 
-            print(f"[RESET] Reset widgets - seasons: {len(original_unique_seasons)}, clusters: {len(original_unique_clusters)}, sex: {len(original_unique_sex)}, type: {len(original_unique_type)}")
+            print(f"[RESET] Reset widgets - seasons: {len(original_unique_seasons)}, sex: {len(original_unique_sex)}, type: {len(original_unique_type)}")
 
             # Update displays
             update_stats_display(state.current_meta, stats_div, 0, source=source)
@@ -3897,7 +3782,6 @@ def create_app():
             const alpha_base = d['alpha_base'];
             const alpha = d['alpha'];
             const season_on = d['season_on'] || new Array(hdbscan.length).fill(true);
-            const cluster_on = d['cluster_on'] || new Array(hdbscan.length).fill(true);
             const sex_on = d['sex_on'] || new Array(hdbscan.length).fill(true);
             const type_on = d['type_on'] || new Array(hdbscan.length).fill(true);
             const time_on = d['time_on'] || new Array(hdbscan.length).fill(true);
@@ -3909,7 +3793,7 @@ def create_app():
                 const hdbscan_visible = active.has(String(hdbscan[i]));
                 d['hdbscan_on'][i] = hdbscan_visible;
 
-                if (season_on[i] && cluster_on[i] && sex_on[i] && type_on[i] &&
+                if (season_on[i] && sex_on[i] && type_on[i] &&
                     time_on[i] && selection_on[i] && dedupe_on[i] && hdbscan_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
@@ -3997,7 +3881,6 @@ def create_app():
             selection_checks,
             selection_clear_btn,
             season_checks,
-            cluster_checks,
             hdbscan_checks,
             sex_checks,
             type_checks,

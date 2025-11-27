@@ -7,6 +7,7 @@ species:
 
 paths:
   root: "/Volumes/Z Slim/zslim_birdcluster" # external drive recommended
+  detections_root: "/Volumes/Z Slim/zslim_birdcluster/xc_detections"  # BirdNET detection tables per species (xc_detections/<slug>)
   vocal_type_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/carduelis_carduelis/vocal_types"  # Saved vocal-type selections for this species
   dialect_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/carduelis_carduelis/dialects"        # Saved dialect selections for this species
   
@@ -14,6 +15,11 @@ xeno_canto:
   max_recordings: 25000
   include_background: true  # Include recordings where species is in background
   extra_query: "len:3-200"  # Additional XC filters (recording length 3-200 seconds)
+  bounding_box:
+    lat_min: 15.0    # Western Palearctic south edge (approx North Africa)
+    lon_min: -35.0   # West edge (Atlantic/Azores)
+    lat_max: 82.0    # North edge (Arctic)
+    lon_max: 90.0    # East edge (Ural/West Siberia)
   timeout: 15
   pause: 0.01  # Seconds between API calls (be polite!)
 
@@ -28,6 +34,7 @@ birdnet:
   version: "2.4"
   threads: 5        # Good for M1 Max (10 cores total, leave some for system)
   batch_size: 32    # Good for 32GB RAM
+  overlap_sec: 2.0  # Overlap between analysis windows; 2.0 on 3s windows = ~1s hop
   # Note: Can increase threads to 10-12 if you want max speed
   # But 8 keeps system responsive for other tasks
 

@@ -15,6 +15,11 @@ xeno_canto:
   max_recordings: 25000
   include_background: true  # Include recordings where species is in background
   extra_query: "len:3-200"  # Additional XC filters (recording length 3-200 seconds)
+  bounding_box:
+    lat_min: 15.0    # Western Palearctic south edge (approx North Africa)
+    lon_min: -35.0   # West edge (Atlantic/Azores)
+    lat_max: 82.0    # North edge (Arctic)
+    lon_max: 90.0    # East edge (Ural/West Siberia)
   timeout: 15
   pause: 0.01  # Seconds between API calls (be polite!)
   per_page: 300  # API v3 supports 50-500 results per page; higher = fewer requests

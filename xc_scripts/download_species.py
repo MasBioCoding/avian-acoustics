@@ -6,6 +6,7 @@ Includes both foreground (main species) and background recordings.
 Uses the Xeno-Canto API v3 (https://xeno-canto.org/explore/api),
 which requires an API key. Set it via the `XENO_CANTO_API_KEY`
 environment variable or the `xeno_canto.api_key` config field.
+to set, use: export XENO_CANTO_API_KEY="your-key-here" in your shell (terminal).
 Geographic filtering is supported via `xeno_canto.bounding_box`
 using Xeno-Canto's `box:lat_min,lon_min,lat_max,lon_max` query.
 
@@ -13,6 +14,11 @@ cd /path/to/birdnet_data_pipeline
 for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 
 Usage:
+    python xc_scripts/download_species.py --config xc_configs/config_regulus_ignicapilla.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_regulus_regulus.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_prunella_modularis.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
+
     python xc_scripts/download_species.py --species "Emberiza citrinella" --max-recordings 1000
     python xc_scripts/download_species.py --config xc_configs/config_limosa_limosa.yaml
     python xc_scripts/download_species.py --config xc_configs/config_emberiza_citrinella.yaml

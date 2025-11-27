@@ -54,7 +54,7 @@ analysis:
   
   # Visualization parameters
   point_size: 7            # Size of points in scatter plots
-  point_alpha: 0.3          # Transparency of points (0.0-1.0)
+  point_alpha: 0.9          # Transparency of points (0.0-1.0)
 
 audio:
   auto_serve: true                   # Start lightweight HTTP server for clips
