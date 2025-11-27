@@ -4,11 +4,16 @@ Process downloaded bird recordings: detect, clip, and generate embeddings.
 Uses BirdNET-Analyzer CLI for efficient batch processing.
 BirdNET window overlap is configurable via birdnet.overlap_sec or --overlap
 (default 2.0s) to slide the default 3s detector window by roughly 1 second.
+Clips are resampled to a consistent 48 kHz before embedding.
 
 cd /path/to/birdnet_data_pipeline
 for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 
 Usage:
+    python xc_scripts/process_species.py --config xc_configs/config_regulus_ignicapilla.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_regulus_regulus.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_chloris_chloris.yaml
+
     python xc_scripts/process_species.py --config xc_configs/config_limosa_limosa.yaml
     python xc_scripts/process_species.py --config xc_configs/config_emberiza_citrinella.yaml
     python xc_scripts/process_species.py --config xc_configs/config_sylvia_atricapilla.yaml
@@ -27,14 +32,11 @@ Usage:
     python xc_scripts/process_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/process_species.py --config xc_configs/config_cettia_cetti.yaml
     python xc_scripts/process_species.py --config xc_configs/config.yaml
-    python xc_scripts/process_species.py --config xc_configs/config_regulus_ignicapilla.yaml
-
 """
 
 import argparse
 import csv
 import json
-import random
 import shutil
 import subprocess
 import sys
@@ -107,6 +109,12 @@ class SpeciesProcessor:
         self.min_confidence = config["processing"].get("min_confidence", 0.20)
         self.merge_within = config["processing"].get("merge_within_sec", 1.0)
         self.delete_originals = config["processing"].get("delete_originals", True)
+        target_sample_rate = int(
+            config["processing"].get("target_sample_rate_hz", 48000) or 48000
+        )
+        self.target_sample_rate = (
+            target_sample_rate if target_sample_rate > 0 else 48000
+        )
         
         # BirdNET parameters
         self.threads = config.get("birdnet", {}).get("threads", 4)
@@ -160,8 +168,8 @@ class SpeciesProcessor:
             # Get detections for this file
             detections = detections_by_file[audio_path_str]
             
-            # Select random non-overlapping detections
-            selected_detections = self._select_random_detections(detections)
+            # Select highest-confidence detections with temporal spacing
+            selected_detections = self._select_top_detections(detections)
             
             # Create clips (suppress librosa warnings)
             with warnings.catch_warnings():
@@ -460,42 +468,49 @@ class SpeciesProcessor:
                 writer.writeheader()
                 writer.writerows(rows)
     
-    def _select_random_detections(self, detections: List[Dict]) -> List[Dict]:
-        """Randomly select N non-overlapping detections"""
+    def _select_top_detections(self, detections: List[Dict]) -> List[Dict]:
+        """Select up to max_clips top-confidence detections spaced >=4s apart."""
         if not detections:
             return []
         
-        # First, find ALL non-overlapping detections
-        sorted_dets = sorted(detections, 
-                           key=lambda x: float(x.get('start_time', 0)))
+        min_start_gap = 4.0
+
+        def start_time(det: Dict) -> float:
+            return float(det.get("start_time", det.get("start", 0.0)))
         
-        non_overlapping = []
-        for det in sorted_dets:
-            start = float(det.get('start_time', 0))
-            end = float(det.get('end_time', 0))
-            
-            overlap = False
-            for existing in non_overlapping:
-                ex_start = float(existing.get('start_time', 0))
-                ex_end = float(existing.get('end_time', 0))
-                
-                # Check for overlap (with merge_within buffer)
-                if not (end + self.merge_within < ex_start or 
-                       start > ex_end + self.merge_within):
-                    overlap = True
-                    break
-            
-            if not overlap:
-                non_overlapping.append(det)
+        sorted_by_conf = sorted(
+            detections,
+            key=lambda det: float(det.get("confidence", 0.0)),
+            reverse=True,
+        )
         
-        # Randomly sample up to max_clips from all non-overlapping
-        if len(non_overlapping) <= self.max_clips:
-            selected = non_overlapping
-        else:
-            selected = random.sample(non_overlapping, self.max_clips)
+        selected: List[Dict] = []
+        for det in sorted_by_conf:
+            start = start_time(det)
+            if all(
+                abs(start - start_time(existing)) >= min_start_gap
+                for existing in selected
+            ):
+                selected.append(det)
+            if len(selected) >= self.max_clips:
+                break
         
         # Return in temporal order for consistent clip numbering
-        return sorted(selected, key=lambda x: float(x.get('start_time', 0)))
+        return sorted(selected, key=start_time)
+    
+    def _resample_clip(
+        self, clip_audio: np.ndarray, original_sr: int
+    ) -> Tuple[np.ndarray, int]:
+        """Resample clip to the configured target sample rate if needed."""
+        if original_sr == self.target_sample_rate:
+            return clip_audio, original_sr
+        
+        resampled_audio = librosa.resample(
+            clip_audio,
+            orig_sr=original_sr,
+            target_sr=self.target_sample_rate
+        )
+        return resampled_audio, self.target_sample_rate
     
     def _create_clips(self, audio_file: Path, xcid: str, 
                      detections: List[Dict]) -> List[ClipInfo]:
@@ -525,12 +540,13 @@ class SpeciesProcessor:
             start_sample = int(clip_start * sr)
             end_sample = int(clip_end * sr)
             clip_audio = y[start_sample:end_sample]
+            clip_audio, clip_sr = self._resample_clip(clip_audio, sr)
             
             # Save clip
             clip_filename = f"{self.slug}_{xcid}_{idx:02d}.wav"
             clip_path = self.clips_dir / clip_filename
             
-            sf.write(str(clip_path), clip_audio, sr)
+            sf.write(str(clip_path), clip_audio, clip_sr)
             
             clips.append(ClipInfo(
                 xcid=xcid,
@@ -651,7 +667,8 @@ def load_config(config_path: Optional[Path] = None) -> Dict:
             "clip_duration_sec": 3.0,
             "min_confidence": 0.20,
             "merge_within_sec": 1.0,
-            "delete_originals": True
+            "delete_originals": True,
+            "target_sample_rate_hz": 48000,
         },
         "birdnet": {
             "version": "2.4",

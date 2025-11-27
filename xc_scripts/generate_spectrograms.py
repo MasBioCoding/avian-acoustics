@@ -6,8 +6,14 @@ The script scans the clip directory for a target species and writes one
 spectrogram image per clip into `<root>/spectrograms/<species_slug>`.
 
 Typical usage:
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_regulus_ignicapilla.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_regulus_regulus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_chloris_chloris.yaml
+
+
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_cettia_cetti.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_phylloscopus_trochilus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_limosa_limosa.yaml
     
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_asio_otus.yaml
