@@ -15,6 +15,7 @@ To run:
 import argparse
 import base64
 import errno
+import json
 import sys
 from datetime import datetime
 import yaml
@@ -70,6 +71,8 @@ GEOSHIFT_CLUSTER_DIAMETER_KM = 2.0
 GEOSHIFT_CLUSTER_RADIUS_KM = GEOSHIFT_CLUSTER_DIAMETER_KM / 2.0
 GEOSHIFT_NORTH_COLOR = "#1f78b4"
 GEOSHIFT_SOUTH_COLOR = "#d62728"
+REGION_UNASSIGNED_COLOR = "#c0c0c0"
+REGION_DEFAULT_COLOR = "#005f73"
 
 def normalize_clip_index(value: Any) -> Optional[int]:
     """Convert a clip index-like value to an integer, returning None when invalid."""
@@ -258,6 +261,20 @@ SPECIES_GROUPS_DIR = XC_GROUPS_ROOT / SPECIES_SLUG
 VOCAL_TYPES_DIR = SPECIES_GROUPS_DIR / "vocal_types"
 DIALECTS_DIR = SPECIES_GROUPS_DIR / "dialects"
 GROUP_TABLE_SUFFIX = ".csv"
+REGION_BOUNDARIES_ROOT = ROOT_PATH / "region_boundaries"
+REGION_SPECIES_DIR = REGION_BOUNDARIES_ROOT / SPECIES_SLUG
+REGION_VARIANTS: dict[str, dict[str, str]] = {
+    "course": {"label": "Region (course)", "filename": "regions_course.json"},
+    "fine": {"label": "Region (fine)", "filename": "regions_fine.json"},
+    "custom": {"label": "Region (custom)", "filename": "regions_custom.json"},
+}
+
+
+def region_file_path(key: str) -> Path:
+    """Return the boundary JSON path for a given region variant key."""
+
+    filename = REGION_VARIANTS.get(key, {}).get("filename") or f"regions_{key}.json"
+    return REGION_SPECIES_DIR / filename
 _audio_cfg = config.get("audio", {}) or {}
 _audio_base = _audio_cfg.get("base_url")
 AUDIO_BASE_URL = (
@@ -535,6 +552,15 @@ def lonlat_to_web_mercator(lon_values, lat_values):
     return x, y
 
 
+def web_mercator_to_lonlat(x_values, y_values):
+    """Convert Web Mercator coordinates back to longitude/latitude pairs."""
+    x_arr = np.asarray(x_values, dtype=float)
+    y_arr = np.asarray(y_values, dtype=float)
+    lon = (x_arr / 6378137.0) * (180.0 / np.pi)
+    lat = (2.0 * np.arctan(np.exp(y_arr / 6378137.0)) - (np.pi / 2.0)) * (180.0 / np.pi)
+    return lon, lat
+
+
 def latitude_to_colors(latitudes: pd.Series) -> list[str]:
     """Return gradient colors (yellow→green→blue) based on latitude values."""
 
@@ -545,6 +571,147 @@ def longitude_to_colors(longitudes: pd.Series) -> list[str]:
     """Return gradient colors (yellow→green→blue) based on longitude values."""
 
     return _gradient_by_series(longitudes)
+
+
+def _clean_region_color(value: Any, fallback: str = REGION_DEFAULT_COLOR) -> str:
+    """Return a sanitized hex color (#RRGGBB) or the provided fallback."""
+
+    try:
+        text = str(value).strip()
+    except Exception:
+        text = ""
+    if not text:
+        return fallback
+    if text.startswith("#"):
+        text = text.lstrip("#")
+    if len(text) not in (3, 6):
+        return fallback
+    try:
+        int(text, 16)
+    except ValueError:
+        return fallback
+    if len(text) == 3:
+        text = "".join(ch * 2 for ch in text)
+    return f"#{text.lower()}"
+
+
+def _clean_region_name(name_value: Any, fallback: str) -> str:
+    """Return a trimmed region name or the provided fallback if blank."""
+
+    try:
+        text = str(name_value).strip()
+    except Exception:
+        text = ""
+    return text or fallback
+
+
+def load_region_polygons(path: Path) -> list[dict[str, Any]]:
+    """Load saved region polygons for the current species."""
+
+    if not path.exists():
+        return []
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception as exc:
+        print(f"  Warning: failed to read region file {path}: {exc}")
+        return []
+
+    if not isinstance(payload, list):
+        print(f"  Warning: region file {path} is not a list.")
+        return []
+
+    regions: list[dict[str, Any]] = []
+    for region in payload:
+        if not isinstance(region, dict):
+            continue
+        lon_values = region.get("lon") or region.get("lons") or []
+        lat_values = region.get("lat") or region.get("lats") or []
+        try:
+            lon_list = [float(val) for val in lon_values]
+            lat_list = [float(val) for val in lat_values]
+        except Exception:
+            continue
+        if len(lon_list) < 3 or len(lat_list) < 3 or len(lon_list) != len(lat_list):
+            continue
+        default_name = f"Region {len(regions) + 1}"
+        regions.append({
+            "lon": lon_list,
+            "lat": lat_list,
+            "name": _clean_region_name(region.get("name") or region.get("label"), default_name),
+            "color": _clean_region_color(region.get("color"), REGION_DEFAULT_COLOR),
+        })
+
+    return regions
+
+
+def save_region_polygons(
+    xs_list: list[Any],
+    ys_list: list[Any],
+    names_list: Optional[list[Any]] = None,
+    colors_list: Optional[list[Any]] = None,
+    *,
+    destination: Path,
+) -> Optional[Path]:
+    """Persist drawn regions to disk as lon/lat JSON, including region names and colors."""
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"  ERROR: could not prepare region directory {destination.parent}: {exc}")
+        return None
+
+    regions: list[dict[str, Any]] = []
+    count = min(len(xs_list), len(ys_list))
+
+    for idx in range(count):
+        xs = xs_list[idx]
+        ys = ys_list[idx]
+        if xs is None or ys is None:
+            continue
+        try:
+            xs_arr = np.asarray(xs, dtype=float)
+            ys_arr = np.asarray(ys, dtype=float)
+        except Exception:
+            continue
+        if xs_arr.size < 3 or ys_arr.size < 3 or xs_arr.size != ys_arr.size:
+            continue
+
+        lon, lat = web_mercator_to_lonlat(xs_arr, ys_arr)
+        raw_name = None
+        if names_list is not None and idx < len(names_list):
+            raw_name = names_list[idx]
+        region_name = _clean_region_name(
+            raw_name,
+            fallback=f"Region {len(regions) + 1}",
+        )
+        raw_color = None
+        if colors_list is not None and idx < len(colors_list):
+            raw_color = colors_list[idx]
+        region_color = _clean_region_color(raw_color, REGION_DEFAULT_COLOR)
+        regions.append(
+            {
+                "lon": [float(val) for val in lon],
+                "lat": [float(val) for val in lat],
+                "name": region_name,
+                "color": region_color,
+            }
+        )
+
+    if not regions:
+        print("  No valid regions to save.")
+        return None
+
+    try:
+        with open(destination, "w", encoding="utf-8") as handle:
+            json.dump(regions, handle, indent=2)
+    except Exception as exc:
+        print(f"  ERROR: failed to write regions to {destination}: {exc}")
+        return None
+
+    return destination
+
 
 def update_stats_display(metadata, stats_div, zoom_level, date_slider=None, source=None):
     """Update the statistics display with UMAP and selection info"""
@@ -939,6 +1106,10 @@ def prepare_hover_data(
             'time_color': time_colors,
             'lat_color': latitude_colors,
             'lon_color': longitude_colors,
+            'region_label': ["Unassigned"] * len(metadata),
+            'region_color': [REGION_UNASSIGNED_COLOR] * len(metadata),
+            'region_on': [True] * len(metadata),
+            'region_id': [-1] * len(metadata),
             'selection_group': [-1] * len(metadata),
             'selection_color': [SELECTION_UNASSIGNED_COLOR] * len(metadata),
             'selection_on': [True] * len(metadata),
@@ -1163,6 +1334,185 @@ def create_app():
         umap_plot, umap_hover, umap_view = create_umap_plot(source)
         map_plot, map_hover, map_view = create_map_plot(source)
 
+        active_region_key = next(iter(REGION_VARIANTS))
+        region_contexts: dict[str, dict[str, Any]] = {}
+        region_widget_groups: list[list[Any]] = []
+        region_label_to_key: dict[str, str] = {
+            meta.get("label", key.title()): key for key, meta in REGION_VARIANTS.items()
+        }
+
+        def _make_region_context(key: str, label: str) -> dict[str, Any]:
+            """Create ColumnDataSources, renderer, and widgets for a region variant."""
+
+            source = ColumnDataSource(
+                data={
+                    'xs': [],
+                    'ys': [],
+                    'fill_alpha': [],
+                    'name': [],
+                    'color': [],
+                }
+            )
+            source.name = f"region_source_{key}"
+            renderer = map_plot.patches(
+                'xs',
+                'ys',
+                source=source,
+                fill_color='color',
+                fill_alpha='fill_alpha',
+                line_color='color',
+                line_alpha=0.9,
+                line_width=2,
+                visible=False,
+                name=f"region_renderer_{key}",
+            )
+            draft_source = ColumnDataSource(data={'x': [], 'y': []})
+            draft_line = map_plot.line(
+                'x',
+                'y',
+                source=draft_source,
+                line_color="#222222",
+                line_dash="dashed",
+                line_width=2,
+                alpha=0.7,
+                visible=False,
+            )
+            draft_points = map_plot.circle(
+                'x',
+                'y',
+                source=draft_source,
+                size=6,
+                color="#222222",
+                alpha=0.9,
+                visible=False,
+            )
+
+            saved_regions = load_region_polygons(region_file_path(key))
+            if saved_regions:
+                xs_saved: list[list[float]] = []
+                ys_saved: list[list[float]] = []
+                fill_alpha_saved: list[float] = []
+                names_saved: list[str] = []
+                colors_saved: list[str] = []
+                for idx, region in enumerate(saved_regions):
+                    lon_vals = region.get("lon", [])
+                    lat_vals = region.get("lat", [])
+                    if len(lon_vals) < 3 or len(lat_vals) < 3 or len(lon_vals) != len(lat_vals):
+                        continue
+                    x_vals, y_vals = lonlat_to_web_mercator(lon_vals, lat_vals)
+                    xs_saved.append([float(val) for val in x_vals])
+                    ys_saved.append([float(val) for val in y_vals])
+                    fill_alpha_saved.append(0.2)
+                    default_name = f"Region {len(names_saved) + 1}"
+                    names_saved.append(
+                        _clean_region_name(region.get("name") or region.get("label"), default_name)
+                    )
+                    colors_saved.append(_clean_region_color(region.get("color"), REGION_DEFAULT_COLOR))
+                source.data = {
+                    'xs': xs_saved,
+                    'ys': ys_saved,
+                    'fill_alpha': fill_alpha_saved,
+                    'name': names_saved,
+                    'color': colors_saved,
+                }
+
+            help_div = Div(
+                text=(
+                    f"<b>{label}:</b> use the polygon draw tool on the map to outline areas. "
+                    "Name each region and pick a hex color when closing the polygon; save to persist them, "
+                    "load to restore, and clear to start fresh."
+                ),
+                width=300,
+                visible=False,
+                styles={'font-size': '11px', 'color': '#444'}
+            )
+            draw_toggle = Toggle(
+                label=f"Draw {label.lower()}",
+                active=False,
+                button_type="primary",
+                width=160,
+                visible=False,
+                name=f"region_draw_{key}",
+            )
+            cancel_btn = Button(
+                label="Cancel draft",
+                button_type="default",
+                width=160,
+                visible=False,
+                name=f"region_cancel_{key}",
+            )
+            status_div = Div(
+                text="<i>No regions loaded.</i>",
+                width=300,
+                visible=False,
+                styles={'font-size': '11px', 'color': '#666'},
+                name=f"region_status_{key}",
+            )
+            checks = CheckboxGroup(
+                labels=["Unassigned (0)"],
+                active=[0],
+                visible=False,
+                name=f"region_checks_{key}",
+            )
+            save_btn = Button(
+                label="Save regions",
+                button_type="success",
+                width=180,
+                visible=False,
+                name=f"region_save_{key}",
+            )
+            load_btn = Button(
+                label="Load regions",
+                button_type="default",
+                width=180,
+                visible=False,
+                name=f"region_load_{key}",
+            )
+            clear_btn = Button(
+                label="Clear regions",
+                button_type="default",
+                width=180,
+                visible=False,
+                name=f"region_clear_{key}",
+            )
+
+            widgets = [
+                help_div,
+                draw_toggle,
+                cancel_btn,
+                status_div,
+                save_btn,
+                load_btn,
+                clear_btn,
+                checks,
+            ]
+            region_widget_groups.append(widgets)
+
+            ctx = {
+                "key": key,
+                "label": label,
+                "file_path": region_file_path(key),
+                "source": source,
+                "renderer": renderer,
+                "draft_source": draft_source,
+                "draft_line": draft_line,
+                "draft_points": draft_points,
+                "help_div": help_div,
+                "draw_toggle": draw_toggle,
+                "cancel_btn": cancel_btn,
+                "status_div": status_div,
+                "checks": checks,
+                "save_btn": save_btn,
+                "load_btn": load_btn,
+                "clear_btn": clear_btn,
+                "widgets": widgets,
+            }
+            region_contexts[key] = ctx
+            return ctx
+
+        for region_key, meta in REGION_VARIANTS.items():
+            _make_region_context(region_key, meta.get("label", region_key.title()))
+
         # Overlays for geographic shift visualisation
         north_shift_source = ColumnDataSource(data={
             'x': [],
@@ -1326,6 +1676,7 @@ def create_app():
             season_on = _normalize(data_dict.get('season_on'), True)
             selection_on = _normalize(data_dict.get('selection_on'), True)
             dedupe_on = _normalize(data_dict.get('dedupe_on'), True)
+            region_on = _normalize(data_dict.get('region_on'), True)
 
             for idx in range(n):
                 if (
@@ -1336,6 +1687,7 @@ def create_app():
                     and season_on[idx]
                     and selection_on[idx]
                     and dedupe_on[idx]
+                    and region_on[idx]
                 ):
                     alpha_values[idx] = alpha_base[idx] if idx < len(alpha_base) else 0.0
                 else:
@@ -1488,9 +1840,22 @@ def create_app():
                 "Time of Day",
                 "Latitude",
                 "Longitude",
+                "Region (course)",
+                "Region (fine)",
+                "Region (custom)",
                 "Selection",
             ],
         )
+        
+        def _on_color_select_change(attr: str, old: Any, new: Any) -> None:
+            region_key = _region_key_from_mode(new)
+            if region_key:
+                _set_active_region(region_key)
+                apply_regions_from_source(region_contexts[region_key], activate=True)
+            else:
+                _set_active_region(active_region_key)
+
+        color_select.on_change("value", _on_color_select_change)
         
         # --- SLIDERS ---
         # Bounds slider (first create valid range)
@@ -1769,6 +2134,339 @@ def create_app():
             except (TypeError, ValueError):
                 value = point_alpha_default
             return max(min(value, 1.0), 0.01)
+
+        region_update_in_progress = False
+        region_normalizing = False
+
+        def _region_key_from_mode(mode: str) -> Optional[str]:
+            """Map a Color-by label to a region variant key, if applicable."""
+
+            if not mode:
+                return None
+            if mode in region_contexts:
+                return mode
+            return region_label_to_key.get(str(mode), None)
+
+        def _set_active_region(key: str) -> None:
+            """Mark the given region context as active and toggle renderers."""
+
+            nonlocal active_region_key
+            if key not in region_contexts:
+                return
+            active_region_key = key
+            for ctx in region_contexts.values():
+                is_active = ctx["key"] == active_region_key and _region_key_from_mode(color_select.value) == ctx["key"]
+                ctx["renderer"].visible = is_active
+                ctx["draft_line"].visible = is_active and ctx["draw_toggle"].active
+                ctx["draft_points"].visible = is_active and ctx["draw_toggle"].active
+
+        def _normalize_region_source(ctx: dict[str, Any]) -> None:
+            """Keep a region source columns in sync to avoid renderer errors."""
+
+            nonlocal region_normalizing
+            if region_normalizing:
+                return
+            region_normalizing = True
+            try:
+                data = dict(ctx["source"].data)
+                xs = list(data.get('xs', []))
+                ys = list(data.get('ys', []))
+                n = min(len(xs), len(ys))
+                xs = xs[:n]
+                ys = ys[:n]
+
+                fill_alpha = list(data.get('fill_alpha', []))
+                if len(fill_alpha) < n:
+                    fill_alpha.extend([0.2] * (n - len(fill_alpha)))
+                elif len(fill_alpha) > n:
+                    fill_alpha = fill_alpha[:n]
+
+                raw_names = list(data.get('name', []))
+                if len(raw_names) < n:
+                    raw_names.extend([""] * (n - len(raw_names)))
+                elif len(raw_names) > n:
+                    raw_names = raw_names[:n]
+                names = [
+                    _clean_region_name(raw_names[idx], f"Region {idx + 1}")
+                    for idx in range(n)
+                ]
+
+                raw_colors = list(data.get('color', []))
+                if len(raw_colors) < n:
+                    raw_colors.extend([REGION_DEFAULT_COLOR] * (n - len(raw_colors)))
+                elif len(raw_colors) > n:
+                    raw_colors = raw_colors[:n]
+                colors = [
+                    _clean_region_color(raw_colors[idx], REGION_DEFAULT_COLOR)
+                    for idx in range(n)
+                ]
+
+                ctx["source"].data = {
+                    'xs': xs,
+                    'ys': ys,
+                    'fill_alpha': fill_alpha,
+                    'name': names,
+                    'color': colors,
+                }
+            finally:
+                region_normalizing = False
+
+        def apply_regions_from_source(
+            ctx: dict[str, Any],
+            status_message: Optional[str] = None,
+            *,
+            activate: bool = True,
+        ) -> None:
+            """Assign region labels/colors based on the provided region context."""
+
+            nonlocal region_update_in_progress
+            if region_update_in_progress:
+                return
+            region_update_in_progress = True
+            try:
+                if activate:
+                    _set_active_region(ctx["key"])
+
+                data = dict(source.data)
+                x_points = np.asarray(data.get('x3857', []), dtype=float)
+                y_points = np.asarray(data.get('y3857', []), dtype=float)
+                n_points = len(x_points)
+
+                raw_xs = list(ctx["source"].data.get('xs', []))
+                raw_ys = list(ctx["source"].data.get('ys', []))
+                raw_names = list(ctx["source"].data.get('name', []))
+                raw_colors = list(ctx["source"].data.get('color', []))
+
+                xs: list[list[float]] = []
+                ys: list[list[float]] = []
+                names: list[str] = []
+                colors: list[str] = []
+
+                for idx in range(min(len(raw_xs), len(raw_ys))):
+                    try:
+                        xs_vals = [float(val) for val in raw_xs[idx]]
+                        ys_vals = [float(val) for val in raw_ys[idx]]
+                    except Exception:
+                        continue
+                    if len(xs_vals) < 3 or len(ys_vals) < 3 or len(xs_vals) != len(ys_vals):
+                        continue
+
+                    xs.append(xs_vals)
+                    ys.append(ys_vals)
+                    fallback_name = f"Region {len(names) + 1}"
+                    name_value = raw_names[idx] if idx < len(raw_names) else ""
+                    names.append(_clean_region_name(name_value, fallback_name))
+                    color_value = raw_colors[idx] if idx < len(raw_colors) else REGION_DEFAULT_COLOR
+                    colors.append(_clean_region_color(color_value, REGION_DEFAULT_COLOR))
+
+                region_labels = ["Unassigned"] * n_points
+                region_colors = [REGION_UNASSIGNED_COLOR] * n_points
+                region_ids = [-1] * n_points
+
+                def point_in_poly(px_val: float, py_val: float, poly_x: list[float], poly_y: list[float]) -> bool:
+                    inside = False
+                    last = len(poly_x) - 1
+                    for i, (x_i, y_i) in enumerate(zip(poly_x, poly_y)):
+                        x_j = poly_x[last]
+                        y_j = poly_y[last]
+                        last = i
+                        try:
+                            intersects = (y_i > py_val) != (y_j > py_val) and (
+                                px_val
+                                < (x_j - x_i) * (py_val - y_i) / ((y_j - y_i) if (y_j - y_i) != 0 else 1e-9) + x_i
+                            )
+                        except Exception:
+                            intersects = False
+                        if intersects:
+                            inside = not inside
+                    return inside
+
+                region_names = names
+                region_color_lookup = colors
+                for region_idx, (poly_x, poly_y) in enumerate(zip(xs, ys)):
+                    name_val = region_names[region_idx]
+                    color_val = region_color_lookup[region_idx] if region_idx < len(region_color_lookup) else REGION_DEFAULT_COLOR
+                    for point_idx, (px_val, py_val) in enumerate(zip(x_points, y_points)):
+                        if not (np.isfinite(px_val) and np.isfinite(py_val)):
+                            continue
+                        if point_in_poly(float(px_val), float(py_val), poly_x, poly_y):
+                            region_labels[point_idx] = name_val
+                            region_colors[point_idx] = color_val
+                            region_ids[point_idx] = region_idx
+
+                counts = Counter(region_labels)
+                checkbox_labels = [f"Unassigned ({counts.get('Unassigned', 0)})"] + [
+                    f"{name} ({counts.get(name, 0)})" for name in region_names
+                ]
+                checks = ctx["checks"]
+                checks.labels = checkbox_labels
+                if not checks.active or max(checks.active, default=-1) >= len(checkbox_labels):
+                    checks.active = list(range(len(checkbox_labels)))
+
+                active_labels = {
+                    checkbox_labels[idx].rsplit(" (", 1)[0]
+                    for idx in (checks.active or [])
+                    if 0 <= idx < len(checkbox_labels)
+                }
+                if not active_labels:
+                    active_labels = {label.rsplit(" (", 1)[0] for label in checkbox_labels}
+
+                region_on = [label in active_labels for label in region_labels]
+                adjusted_fill_alpha = [
+                    0.25 if name in active_labels else 0.05
+                    for name in region_names
+                ]
+
+                nonlocal region_normalizing
+                region_normalizing = True
+                try:
+                    ctx["source"].data = {
+                        'xs': xs,
+                        'ys': ys,
+                        'fill_alpha': adjusted_fill_alpha,
+                        'name': region_names,
+                        'color': region_color_lookup,
+                    }
+                finally:
+                    region_normalizing = False
+
+                if _region_key_from_mode(color_select.value) == ctx["key"]:
+                    data['region_label'] = region_labels
+                    data['region_color'] = region_colors
+                    data['region_id'] = region_ids
+                    data['region_on'] = region_on
+                    if _region_key_from_mode(color_select.value) == ctx["key"]:
+                        data['active_color'] = list(region_colors)
+                    refresh_alpha(data)
+
+                status_text = status_message
+                if status_text is None:
+                    if region_names:
+                        status_text = f"{ctx['label']}: {', '.join(region_names)}"
+                    else:
+                        status_text = "<i>No regions loaded.</i>"
+                ctx["status_div"].text = status_text
+            finally:
+                region_update_in_progress = False
+
+        def apply_active_region(status_message: Optional[str] = None) -> None:
+            """Apply the region assignments for the currently selected variant."""
+
+            key = _region_key_from_mode(color_select.value) or active_region_key
+            ctx = region_contexts.get(key)
+            if not ctx:
+                return
+            _set_active_region(key)
+            apply_regions_from_source(ctx, status_message=status_message, activate=True)
+
+        def clear_regions(ctx: dict[str, Any]) -> None:
+            """Clear all drawn regions and reset assignments."""
+            ctx["source"].data = {'xs': [], 'ys': [], 'fill_alpha': [], 'name': [], 'color': []}
+            ctx["draft_source"].data = {'x': [], 'y': []}
+            checks = ctx["checks"]
+            checks.labels = ["Unassigned (0)"]
+            checks.active = [0]
+            apply_regions_from_source(ctx, status_message="<i>Regions cleared.</i>")
+
+        def load_regions_from_disk(ctx: dict[str, Any]) -> None:
+            """Load polygons from the region boundaries directory for a context."""
+            regions = load_region_polygons(ctx["file_path"])
+            if not regions:
+                clear_regions(ctx)
+                ctx["status_div"].text = (
+                    f"<i>No region polygons found for {SPECIES_SLUG} ({ctx['file_path'].name}).</i>"
+                )
+                return
+
+            xs_saved: list[list[float]] = []
+            ys_saved: list[list[float]] = []
+            fill_alpha_saved: list[float] = []
+            names_saved: list[str] = []
+            colors_saved: list[str] = []
+            for region in regions:
+                lon_vals = region.get("lon", [])
+                lat_vals = region.get("lat", [])
+                if len(lon_vals) < 3 or len(lat_vals) < 3 or len(lon_vals) != len(lat_vals):
+                    continue
+                x_vals, y_vals = lonlat_to_web_mercator(lon_vals, lat_vals)
+                xs_saved.append([float(val) for val in x_vals])
+                ys_saved.append([float(val) for val in y_vals])
+                fill_alpha_saved.append(0.2)
+                default_name = f"Region {len(names_saved) + 1}"
+                names_saved.append(
+                    _clean_region_name(region.get("name") or region.get("label"), default_name)
+                )
+                colors_saved.append(_clean_region_color(region.get("color"), REGION_DEFAULT_COLOR))
+
+            ctx["source"].data = {
+                'xs': xs_saved,
+                'ys': ys_saved,
+                'fill_alpha': fill_alpha_saved,
+                'name': names_saved,
+                'color': colors_saved,
+            }
+            apply_regions_from_source(
+                ctx,
+                f"Loaded {len(xs_saved)} region{'s' if len(xs_saved) != 1 else ''} "
+                f"from {ctx['file_path'].name}.",
+            )
+
+        def save_regions_to_disk(ctx: dict[str, Any]) -> None:
+            """Save current polygons for the context to its region boundaries file."""
+            xs_list = ctx["source"].data.get('xs', [])
+            ys_list = ctx["source"].data.get('ys', [])
+            names_list = ctx["source"].data.get('name', [])
+            colors_list = ctx["source"].data.get('color', [])
+            saved_path = save_region_polygons(
+                xs_list,
+                ys_list,
+                names_list,
+                colors_list,
+                destination=ctx["file_path"],
+            )
+            if saved_path is None:
+                ctx["status_div"].text = "<i>No valid regions to save.</i>"
+                return
+            apply_regions_from_source(
+                ctx,
+                f"Saved regions to {saved_path.name}.",
+            )
+
+        def _on_region_source_change(ctx: dict[str, Any], attr: str, old: dict, new: dict) -> None:
+            _normalize_region_source(ctx)
+            apply_regions_from_source(ctx)
+
+        def _on_cancel_draft(ctx: dict[str, Any]) -> None:
+            ctx["draft_source"].data = {'x': [], 'y': []}
+            ctx["draw_toggle"].active = False
+
+        def _on_draw_toggle_change(ctx: dict[str, Any], attr: str, old: Any, new: Any) -> None:
+            if new:
+                for other_key, other_ctx in region_contexts.items():
+                    if other_key != ctx["key"] and other_ctx["draw_toggle"].active:
+                        other_ctx["draw_toggle"].active = False
+                _set_active_region(ctx["key"])
+            ctx["draft_line"].visible = (
+                ctx["key"] == active_region_key
+                and ctx["draw_toggle"].active
+                and _region_key_from_mode(color_select.value) == ctx["key"]
+            )
+            ctx["draft_points"].visible = ctx["draft_line"].visible
+
+        for context in region_contexts.values():
+            context["source"].on_change('data', lambda attr, old, new, c=context: _on_region_source_change(c, attr, old, new))
+            context["checks"].on_change('active', lambda attr, old, new, c=context: apply_regions_from_source(c))
+            context["load_btn"].on_click(lambda c=context: load_regions_from_disk(c))
+            context["save_btn"].on_click(lambda c=context: save_regions_to_disk(c))
+            context["clear_btn"].on_click(lambda c=context: clear_regions(c))
+            context["cancel_btn"].on_click(lambda c=context: _on_cancel_draft(c))
+            context["draw_toggle"].on_change('active', lambda attr, old, new, c=context: _on_draw_toggle_change(c, attr, old, new))
+
+        # Activate default region variant on startup.
+        _set_active_region(active_region_key)
+        apply_regions_from_source(region_contexts[active_region_key], status_message=None)
+        region_widgets_flat = [widget for group in region_widget_groups for widget in group]
+        region_widget_sets = {key: ctx["widgets"] for key, ctx in region_contexts.items()}
 
         geoshift_percent_input = Spinner(
             title="Extreme percentile",
@@ -2710,6 +3408,7 @@ def create_app():
             const time_on = d['time_on'] || new Array(season.length).fill(true);
             const selection_on = d['selection_on'] || new Array(season.length).fill(true);
             const dedupe_on = d['dedupe_on'] || new Array(season.length).fill(true);
+            const region_on = d['region_on'] || new Array(season.length).fill(true);
 
             const n = season.length;
             for (let i = 0; i < n; i++) {
@@ -2717,7 +3416,7 @@ def create_app():
                 d['season_on'][i] = season_visible;
 
                 if (hdbscan_on[i] && sex_on[i] && type_on[i] &&
-                    time_on[i] && selection_on[i] && dedupe_on[i] && season_visible) {
+                    time_on[i] && selection_on[i] && dedupe_on[i] && region_on[i] && season_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2767,6 +3466,7 @@ def create_app():
             const season_on = d['season_on'] || new Array(sex.length).fill(true);
             const selection_on = d['selection_on'] || new Array(sex.length).fill(true);
             const dedupe_on = d['dedupe_on'] || new Array(sex.length).fill(true);
+            const region_on = d['region_on'] || new Array(sex.length).fill(true);
 
 
             const n = sex.length;
@@ -2775,7 +3475,7 @@ def create_app():
                 d['sex_on'][i] = sex_visible;
 
                 if (hdbscan_on[i] && sex_visible && type_on[i] &&
-                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i]) {
+                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i] && region_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2825,6 +3525,7 @@ def create_app():
             const season_on = d['season_on'] || new Array(type.length).fill(true);
             const selection_on = d['selection_on'] || new Array(type.length).fill(true);
             const dedupe_on = d['dedupe_on'] || new Array(type.length).fill(true);
+            const region_on = d['region_on'] || new Array(type.length).fill(true);
 
             const n = type.length;
             for (let i = 0; i < n; i++) {
@@ -2832,7 +3533,7 @@ def create_app():
                 d['type_on'][i] = type_visible;
 
                 if (hdbscan_on[i] && sex_on[i] && type_visible &&
-                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i]) {
+                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i] && region_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2873,6 +3574,7 @@ def create_app():
             const season_on = d['season_on'] || new Array(time_hour.length).fill(true);
             const selection_on = d['selection_on'] || new Array(time_hour.length).fill(true);
             const dedupe_on = d['dedupe_on'] || new Array(time_hour.length).fill(true);
+            const region_on = d['region_on'] || new Array(time_hour.length).fill(true);
 
             const min_hour = slider.value[0];
             const max_hour = slider.value[1];
@@ -2886,7 +3588,7 @@ def create_app():
                 
                 // Alpha is visible only if ALL filters allow it
                 if (hdbscan_on[i] && sex_on[i] && type_on[i] &&
-                    time_visible && season_on[i] && selection_on[i] && dedupe_on[i]) {
+                    time_visible && season_on[i] && selection_on[i] && dedupe_on[i] && region_on[i]) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2940,6 +3642,7 @@ def create_app():
             const time_on = d['time_on'] || new Array(assignments.length).fill(true);
             const season_on = d['season_on'] || new Array(assignments.length).fill(true);
             const dedupe_on = d['dedupe_on'] || new Array(assignments.length).fill(true);
+            const region_on = d['region_on'] || new Array(assignments.length).fill(true);
 
             const n = assignments.length;
             let hasAssigned = false;
@@ -2951,7 +3654,7 @@ def create_app():
                 const selection_visible = active_groups.has(group_id);
                 selection_on[i] = selection_visible;
                 if (selection_visible && hdbscan_on[i] && sex_on[i] && type_on[i] &&
-                    time_on[i] && season_on[i] && dedupe_on[i] && alpha_base[i] > 0) {
+                    time_on[i] && season_on[i] && dedupe_on[i] && region_on[i] && alpha_base[i] > 0) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -2995,7 +3698,10 @@ def create_app():
             selection_save_vocal=selection_save_vocal_btn,
             selection_save_dialect=selection_save_dialect_btn,
             selection_load_vocal=selection_load_vocal_btn,
-            selection_load_dialect=selection_load_dialect_btn
+            selection_load_dialect=selection_load_dialect_btn,
+            region_widgets=region_widgets_flat,
+            region_widget_sets=region_widget_sets,
+            region_label_map=region_label_to_key
         ), code="""
             const d = src.data;
             const mode = sel.value;
@@ -3019,9 +3725,18 @@ def create_app():
             selection_save_dialect.disabled = true;
             selection_load_vocal.visible = false;
             selection_load_dialect.visible = false;
+            for (const key in region_widget_sets) {
+                const widgets = region_widget_sets[key] || [];
+                for (const w of widgets) {
+                    if (w.visible !== undefined) {
+                        w.visible = false;
+                    }
+                }
+            }
 
             // Map mode to color column and show appropriate widget
             let from_col;
+            const regionKey = region_label_map[mode] || null;
             switch(mode) {
                 case "Season":
                     from_col = "season_color";
@@ -3053,6 +3768,18 @@ def create_app():
                     break;
                 case "Longitude":
                     from_col = "lon_color";
+                    break;
+                case "Region (course)":
+                case "Region (fine)":
+                case "Region (custom)":
+                    from_col = "region_color";
+                    if (regionKey && region_widget_sets[regionKey]) {
+                        for (const w of region_widget_sets[regionKey]) {
+                            if (w.visible !== undefined) {
+                                w.visible = true;
+                            }
+                        }
+                    }
                     break;
                 case "Selection":
                     from_col = "selection_color";
@@ -3091,6 +3818,11 @@ def create_app():
                     selection_save_vocal.disabled = !hasGroups;
                     selection_save_dialect.disabled = !hasGroups;
                     break;
+            }
+
+            // Safety: do nothing if we couldn't map a color column.
+            if (!from_col || !d[from_col]) {
+                return;
             }
             
             // Update colors
@@ -3180,6 +3912,7 @@ def create_app():
             const season_on = d['season_on'] || new Array(ts.length).fill(true);
             const selection_on = d['selection_on'] || new Array(ts.length).fill(true);
             const dedupe_on = d['dedupe_on'] || new Array(ts.length).fill(true);
+            const region_on = d['region_on'] || new Array(ts.length).fill(true);
             
             const cut0 = Number(s.value[0]);
             const cut1 = Number(s.value[1]);
@@ -3195,7 +3928,7 @@ def create_app():
 
                 // Final alpha depends on ALL filters
                 if (hdbscan_on[i] && sex_on[i] && type_on[i] &&
-                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i] && base > 0) {
+                    time_on[i] && season_on[i] && selection_on[i] && dedupe_on[i] && region_on[i] && base > 0) {
                     alpha[i] = base;
                 } else {
                     alpha[i] = 0.0;
@@ -3329,6 +4062,100 @@ def create_app():
         map_plot.js_on_event('tap', CustomJS(code="""
             window._ctx = 'map';
         """))
+        for context in region_contexts.values():
+            map_plot.js_on_event('tap', CustomJS(args=dict(
+                draw_toggle=context["draw_toggle"],
+                draft=context["draft_source"],
+                regions=context["source"],
+                status=context["status_div"],
+                main_source=source,
+                region_default_color=REGION_DEFAULT_COLOR,
+            ), code="""
+                if (!draw_toggle.active) {
+                    return;
+                }
+                const x = cb_obj.x;
+                const y = cb_obj.y;
+                if (!isFinite(x) || !isFinite(y)) {
+                    return;
+                }
+                if (main_source) {
+                    main_source.selected.indices = [];
+                }
+                const CLOSE_THRESH = 25000;  // meters in web mercator approx
+                const draftData = draft.data;
+                let xs = Array.isArray(draftData.x) ? draftData.x.slice() : [];
+                let ys = Array.isArray(draftData.y) ? draftData.y.slice() : [];
+
+                if (xs.length === 0) {
+                    xs.push(x);
+                    ys.push(y);
+                    draft.data = {x: xs, y: ys};
+                    if (status) status.text = "Drawing region: 1 point.";
+                    return;
+                }
+
+                const dx = x - xs[0];
+                const dy = y - ys[0];
+                const dist = Math.hypot(dx, dy);
+
+                if (dist < CLOSE_THRESH && xs.length >= 3) {
+                    const polyX = xs.concat([xs[0]]);
+                    const polyY = ys.concat([ys[0]]);
+                    const rdata = Object.assign({}, regions.data);
+                    rdata.xs = (rdata.xs || []).slice();
+                    rdata.ys = (rdata.ys || []).slice();
+                    rdata.fill_alpha = (rdata.fill_alpha || []).slice();
+                    rdata.name = (rdata.name || []).slice();
+                    rdata.color = (rdata.color || []).slice();
+                    const idx = rdata.xs.length;
+                    const defaultName = `Region ${idx + 1}`;
+                    let name = defaultName;
+                    try {
+                        const response = window.prompt("Name this region:", defaultName);
+                        if (response !== null) {
+                            const trimmed = String(response).trim();
+                            if (trimmed.length > 0) {
+                                name = trimmed;
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore prompt errors and fall back to the default name.
+                    }
+                    const defaultColor = (regions && regions.data && regions.data.color && regions.data.color[idx])
+                        ? regions.data.color[idx]
+                        : region_default_color;
+                    let color = defaultColor;
+                    try {
+                        const colorResp = window.prompt("Enter color hex (e.g. #005f73):", defaultColor);
+                        if (colorResp !== null) {
+                            const trimmed = String(colorResp).trim();
+                            if (trimmed.length > 0) {
+                                color = trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore prompt errors and fall back to the default color.
+                    }
+
+                    rdata.xs.push(polyX);
+                    rdata.ys.push(polyY);
+                    rdata.fill_alpha.push(0.2);
+                    rdata.name.push(name);
+                    rdata.color.push(color);
+
+                    regions.data = rdata;
+                    draft.data = {x: [], y: []};
+                    draw_toggle.active = false;
+                    if (status) status.text = `Added ${name} with ${polyX.length - 1} vertices.`;
+                    return;
+                }
+
+                xs.push(x);
+                ys.push(y);
+                draft.data = {x: xs, y: ys};
+                if (status) status.text = `Drawing region: ${xs.length} points (click near first point to close).`;
+            """))
         
         playlist_callback = CustomJS(args=dict(src=source, pane=playlist_panel), code="""
             const d = src.data;
@@ -3592,6 +4419,7 @@ def create_app():
             source.data = new_data
             clear_selection_groups()
             apply_dedupe_filter()
+            apply_active_region()
             
             # Update filter widgets with new unique values and reset to all active
             season_checks.labels = new_unique_seasons
@@ -3663,6 +4491,7 @@ def create_app():
             source.data = new_data
             clear_selection_groups()
             apply_dedupe_filter()
+            apply_active_region()
             
             # Reset filter widgets with original values and set all active
             season_checks.labels = original_unique_seasons
@@ -3787,6 +4616,7 @@ def create_app():
             const time_on = d['time_on'] || new Array(hdbscan.length).fill(true);
             const selection_on = d['selection_on'] || new Array(hdbscan.length).fill(true);
             const dedupe_on = d['dedupe_on'] || new Array(hdbscan.length).fill(true);
+            const region_on = d['region_on'] || new Array(hdbscan.length).fill(true);
 
             const n = hdbscan.length;
             for (let i = 0; i < n; i++) {
@@ -3794,7 +4624,7 @@ def create_app():
                 d['hdbscan_on'][i] = hdbscan_visible;
 
                 if (season_on[i] && sex_on[i] && type_on[i] &&
-                    time_on[i] && selection_on[i] && dedupe_on[i] && hdbscan_visible) {
+                    time_on[i] && selection_on[i] && dedupe_on[i] && region_on[i] && hdbscan_visible) {
                     alpha[i] = alpha_base[i];
                 } else {
                     alpha[i] = 0.0;
@@ -3871,6 +4701,7 @@ def create_app():
 
         # Create a column that contains all filter widgets
         filter_widgets = column(
+            *region_widgets_flat,
             selection_help_div,
             selection_status_div,
             selection_create_btn,
