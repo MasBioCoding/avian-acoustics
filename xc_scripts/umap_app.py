@@ -260,6 +260,8 @@ XC_GROUPS_ROOT = ROOT_PATH / "xc_groups"
 SPECIES_GROUPS_DIR = XC_GROUPS_ROOT / SPECIES_SLUG
 VOCAL_TYPES_DIR = SPECIES_GROUPS_DIR / "vocal_types"
 DIALECTS_DIR = SPECIES_GROUPS_DIR / "dialects"
+ANNOTATE_ONE_DIR = SPECIES_GROUPS_DIR / "annotate_1"
+ANNOTATE_TWO_DIR = SPECIES_GROUPS_DIR / "annotate_2"
 GROUP_TABLE_SUFFIX = ".csv"
 REGION_BOUNDARIES_ROOT = ROOT_PATH / "region_boundaries"
 REGION_SPECIES_DIR = REGION_BOUNDARIES_ROOT / SPECIES_SLUG
@@ -1755,9 +1757,10 @@ def create_app():
             text=(
                 "<b>Selection groups:</b> use the box or lasso selection tools on either plot "
                 "to highlight points, then click <i>Create group from selection</i> to save them. "
-                "Select a group in the checklist and click <i>Save group to vocal types</i> or "
-                "<i>Save group to dialects</i> to export it, or click the matching "
-                "<i>Load</i> button to recreate saved groups from disk. "
+                "Select a group in the checklist and click <i>Save group to vocal types</i>, "
+                "<i>Save group to dialects</i>, <i>Save group to annotate 1</i>, or "
+                "<i>Save group to annotate 2</i> to export it. Use the "
+                "<i>Load</i> buttons to recreate saved vocal type, dialect, or annotate groups from disk. "
                 "Use the checkboxes to toggle visibility of saved groups."
             ),
             width=300,
@@ -1791,6 +1794,20 @@ def create_app():
             visible=False,
             disabled=True,
         )
+        selection_save_annotate1_btn = Button(
+            label="Save group to annotate 1",
+            button_type="success",
+            width=220,
+            visible=False,
+            disabled=True,
+        )
+        selection_save_annotate2_btn = Button(
+            label="Save group to annotate 2",
+            button_type="success",
+            width=220,
+            visible=False,
+            disabled=True,
+        )
         selection_load_vocal_btn = Button(
             label="Load vocal types",
             button_type="default",
@@ -1799,6 +1816,18 @@ def create_app():
         )
         selection_load_dialect_btn = Button(
             label="Load dialects",
+            button_type="default",
+            width=220,
+            visible=False,
+        )
+        selection_load_annotate1_btn = Button(
+            label="Load annotate 1",
+            button_type="default",
+            width=220,
+            visible=False,
+        )
+        selection_load_annotate2_btn = Button(
+            label="Load annotate 2",
             button_type="default",
             width=220,
             visible=False,
@@ -2982,11 +3011,20 @@ def create_app():
             for btn in (
                 selection_save_vocal_btn,
                 selection_save_dialect_btn,
+                selection_save_annotate1_btn,
+                selection_save_annotate2_btn,
                 selection_load_vocal_btn,
                 selection_load_dialect_btn,
+                selection_load_annotate1_btn,
+                selection_load_annotate2_btn,
             ):
                 btn.visible = is_selection_mode
-            for save_btn in (selection_save_vocal_btn, selection_save_dialect_btn):
+            for save_btn in (
+                selection_save_vocal_btn,
+                selection_save_dialect_btn,
+                selection_save_annotate1_btn,
+                selection_save_annotate2_btn,
+            ):
                 save_btn.disabled = not selection_groups
             if not is_selection_mode:
                 selection_status_div.text = ""
@@ -3483,11 +3521,45 @@ def create_app():
                 };
             """)
         )
+        selection_save_annotate1_btn.js_on_event(
+            ButtonClick,
+            CustomJS(args=dict(target=description_request_source), code="""
+                const desc = window.prompt("Enter a description for this annotate 1 group:");
+                if (desc === null) {
+                    return;
+                }
+                target.data = {
+                    kind: ['annotate 1'],
+                    description: [desc],
+                    nonce: [Date.now()]
+                };
+            """)
+        )
+        selection_save_annotate2_btn.js_on_event(
+            ButtonClick,
+            CustomJS(args=dict(target=description_request_source), code="""
+                const desc = window.prompt("Enter a description for this annotate 2 group:");
+                if (desc === null) {
+                    return;
+                }
+                target.data = {
+                    kind: ['annotate 2'],
+                    description: [desc],
+                    nonce: [Date.now()]
+                };
+            """)
+        )
         selection_load_vocal_btn.on_click(
             lambda: load_groups_from_tables("vocal types", VOCAL_TYPES_DIR)
         )
         selection_load_dialect_btn.on_click(
             lambda: load_groups_from_tables("dialects", DIALECTS_DIR)
+        )
+        selection_load_annotate1_btn.on_click(
+            lambda: load_groups_from_tables("annotate 1", ANNOTATE_ONE_DIR)
+        )
+        selection_load_annotate2_btn.on_click(
+            lambda: load_groups_from_tables("annotate 2", ANNOTATE_TWO_DIR)
         )
 
         def handle_annotation_request(attr: str, old: dict, new: dict) -> None:
@@ -3550,6 +3622,10 @@ def create_app():
                 'vocal types': ("vocal types", VOCAL_TYPES_DIR),
                 'dialect': ("dialects", DIALECTS_DIR),
                 'dialects': ("dialects", DIALECTS_DIR),
+                'annotate 1': ("annotate 1", ANNOTATE_ONE_DIR),
+                'annotate1': ("annotate 1", ANNOTATE_ONE_DIR),
+                'annotate 2': ("annotate 2", ANNOTATE_TWO_DIR),
+                'annotate2': ("annotate 2", ANNOTATE_TWO_DIR),
             }
             mapped = directory_map.get(kind_value)
             if not mapped:
@@ -3886,8 +3962,12 @@ def create_app():
             selection_create=selection_create_btn,
             selection_save_vocal=selection_save_vocal_btn,
             selection_save_dialect=selection_save_dialect_btn,
+            selection_save_annotate1=selection_save_annotate1_btn,
+            selection_save_annotate2=selection_save_annotate2_btn,
             selection_load_vocal=selection_load_vocal_btn,
             selection_load_dialect=selection_load_dialect_btn,
+            selection_load_annotate1=selection_load_annotate1_btn,
+            selection_load_annotate2=selection_load_annotate2_btn,
             region_widgets=region_widgets_flat,
             region_widget_sets=region_widget_sets,
             region_label_map=region_label_to_key
@@ -3912,8 +3992,14 @@ def create_app():
             selection_save_vocal.disabled = true;
             selection_save_dialect.visible = false;
             selection_save_dialect.disabled = true;
+            selection_save_annotate1.visible = false;
+            selection_save_annotate1.disabled = true;
+            selection_save_annotate2.visible = false;
+            selection_save_annotate2.disabled = true;
             selection_load_vocal.visible = false;
             selection_load_dialect.visible = false;
+            selection_load_annotate1.visible = false;
+            selection_load_annotate2.visible = false;
             for (const key in region_widget_sets) {
                 const widgets = region_widget_sets[key] || [];
                 for (const w of widgets) {
@@ -3978,10 +4064,16 @@ def create_app():
                     selection_create.visible = true;
                     selection_save_vocal.visible = true;
                     selection_save_dialect.visible = true;
+                    selection_save_annotate1.visible = true;
+                    selection_save_annotate2.visible = true;
                     selection_load_vocal.visible = true;
                     selection_load_dialect.visible = true;
+                    selection_load_annotate1.visible = true;
+                    selection_load_annotate2.visible = true;
                     selection_load_vocal.disabled = false;
                     selection_load_dialect.disabled = false;
+                    selection_load_annotate1.disabled = false;
+                    selection_load_annotate2.disabled = false;
                     let hasVisibleSelection = false;
                     const selected = src.selected.indices ?? [];
                     const alpha = d['alpha'] || [];
@@ -4006,6 +4098,8 @@ def create_app():
                     selection_clear.visible = hasGroups;
                     selection_save_vocal.disabled = !hasGroups;
                     selection_save_dialect.disabled = !hasGroups;
+                    selection_save_annotate1.disabled = !hasGroups;
+                    selection_save_annotate2.disabled = !hasGroups;
                     break;
             }
 
@@ -5084,8 +5178,12 @@ def create_app():
             selection_create_btn,
             selection_save_vocal_btn,
             selection_save_dialect_btn,
+            selection_save_annotate1_btn,
+            selection_save_annotate2_btn,
             selection_load_vocal_btn,
             selection_load_dialect_btn,
+            selection_load_annotate1_btn,
+            selection_load_annotate2_btn,
             selection_checks,
             selection_clear_btn,
             season_checks,
