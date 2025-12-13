@@ -13,6 +13,9 @@ Usage:
     python xc_scripts/process_species.py --config xc_configs/config_regulus_ignicapilla.yaml
     python xc_scripts/process_species.py --config xc_configs/config_regulus_regulus.yaml
     python xc_scripts/process_species.py --config xc_configs/config_chloris_chloris.yaml
+    python xc_scripts/process_species.py --config xc_configs/config_limosa_limosa.yaml    
+    python xc_scripts/process_species.py --config xc_configs/config_curruca_communis.yaml    
+    python xc_scripts/process_species.py --config xc_configs/config_prunella_modularis.yaml
 
     python xc_scripts/process_species.py --config xc_configs/config_limosa_limosa.yaml
     python xc_scripts/process_species.py --config xc_configs/config_emberiza_citrinella.yaml

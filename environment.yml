@@ -16,7 +16,7 @@
 #   python -m birdnet_analyzer.embeddings -db testbirdnet/output -i testbirdnet/input
 #   Can delete after succesful test
 
-name: birdnetcluster1
+name: thesis
 channels:
   - conda-forge
 dependencies:
@@ -43,6 +43,9 @@ dependencies:
   - tqdm
   - importlib-metadata
   - numba
+  - kdepy
+  - pyproj
+  - scikit-image
   - pip:
       - tensorflow-macos==2.15.0
       - tensorflow-metal==1.1.0

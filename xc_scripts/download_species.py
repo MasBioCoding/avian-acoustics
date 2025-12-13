@@ -17,7 +17,11 @@ Usage:
     python xc_scripts/download_species.py --config xc_configs/config_regulus_ignicapilla.yaml
     python xc_scripts/download_species.py --config xc_configs/config_regulus_regulus.yaml
     python xc_scripts/download_species.py --config xc_configs/config_prunella_modularis.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/download_species.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_phylloscopus_trochilus.yaml
+
+    
 
     python xc_scripts/download_species.py --species "Emberiza citrinella" --max-recordings 1000
     python xc_scripts/download_species.py --config xc_configs/config_limosa_limosa.yaml

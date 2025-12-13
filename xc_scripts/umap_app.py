@@ -10,7 +10,10 @@ To run:
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_chloris_chloris.yaml
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_regulus_ignicapilla.yaml
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_regulus_regulus.yaml
-"""
+    bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_prunella_modularis.yaml
+    bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_curruca_communis.yaml
+    
+    """
 
 import argparse
 import base64

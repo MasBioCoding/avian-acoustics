@@ -2,6 +2,10 @@
 """
 Utility helpers for working toward 2D kernel density estimates of bird recording sites.
 
+To run the script:
+    cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
+    python xc_scripts/kde.py --config xc_configs/config_limosa_limosa.yaml
+
 For now the script focuses on loading the saved selection groups (vocal types and dialects)
 so that we can validate the data sources before computing any KDE overlays.
 """

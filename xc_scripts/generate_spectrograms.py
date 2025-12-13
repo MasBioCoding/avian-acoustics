@@ -5,11 +5,14 @@ Generate spectrogram images for clips produced by `process_species.py`.
 The script scans the clip directory for a target species and writes one
 spectrogram image per clip into `<root>/spectrograms/<species_slug>`.
 
+cd /users/masjansma/desktop/birdnetcluster1folder/birdnet_data_pipeline
+
 Typical usage:
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_regulus_ignicapilla.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_regulus_regulus.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_chloris_chloris.yaml
-
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_prunella_modularis.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_curruca_communis.yaml
 
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_cettia_cetti.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_phylloscopus_trochilus.yaml
