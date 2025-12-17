@@ -13,12 +13,17 @@ Typical usage:
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_chloris_chloris.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_prunella_modularis.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_curruca_communis.yaml
-
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_carduelis_carduelis.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_linaria_cannabina.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_phylloscopus_trochilus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs/config_emberiza_calandra.yaml
+    
+    
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_cettia_cetti.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_phylloscopus_trochilus.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_limosa_limosa.yaml
     
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_asio_otus.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_buteo_buteo.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_corvus_corax.yaml

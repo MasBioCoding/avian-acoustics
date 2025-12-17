@@ -20,6 +20,11 @@ Usage:
     python xc_scripts/download_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/download_species.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
     python xc_scripts/download_species.py --config xc_configs/config_phylloscopus_trochilus.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_phylloscopus_trochilus.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_carduelis_carduelis.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_linaria_cannabina.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_emberiza_calandra.yaml
+    python xc_scripts/download_species.py --config xc_configs/config_turdus_iliacus.yaml
 
     
 
