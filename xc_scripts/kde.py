@@ -14,6 +14,7 @@ so that we can validate the data sources before computing any KDE overlays.
 from __future__ import annotations
 
 import argparse
+import html
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -27,6 +28,7 @@ from skimage import measure
 import yaml
 from collections import defaultdict
 import math
+import re
 from bokeh.layouts import column, row
 from bokeh.models import (
     BoxAnnotation,
@@ -61,6 +63,7 @@ class GroupTable:
     group_type: str
     file_path: Path
     data: pd.DataFrame
+    description: Optional[str] = None
     projected_points: Optional[np.ndarray] = None
     projection_center: Optional[np.ndarray] = None
     projection_scale: Optional[np.ndarray] = None
@@ -135,13 +138,30 @@ def load_group_table(group_type: str, table_path: Path) -> GroupTable:
     return GroupTable(group_type=group_type, file_path=table_path, data=df)
 
 
+def load_group_description(table: GroupTable) -> GroupTable:
+    """Load a group's description text from a sibling .txt file, if present."""
+    desc_path = table.file_path.with_suffix(".txt")
+    if not desc_path.exists():
+        print(f"[WARN] {table.file_path.name}: description not found ({desc_path}).")
+        table.description = None
+        return table
+    try:
+        contents = desc_path.read_text(encoding="utf-8").strip()
+        table.description = contents or None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Failed to read description for {table.file_path.name}: {exc}")
+        table.description = None
+    return table
+
+
 def load_all_group_tables(group_dirs: Mapping[str, Path]) -> List[GroupTable]:
     """Load every CSV found beneath the configured group directories."""
     loaded: List[GroupTable] = []
     for group_type, directory in group_dirs.items():
         for csv_file in discover_group_tables(group_type, directory):
             try:
-                loaded.append(load_group_table(group_type, csv_file))
+                table = load_group_table(group_type, csv_file)
+                loaded.append(load_group_description(table))
             except Exception as exc:  # noqa: BLE001
                 print(f"[ERROR] Failed to load {csv_file}: {exc}")
     return loaded
@@ -445,6 +465,63 @@ def _empty_static_payload() -> Dict[str, List[Any]]:
         "probability": [],
         "label": [],
     }
+
+
+def concise_group_label(label: str) -> str:
+    """Shorten a group label by dropping trailing timestamp-like suffixes."""
+    return re.sub(r"(_\d{6,})+$", "", label)
+
+
+def concise_display_label(label: str) -> str:
+    """Shorten a label while preserving any suffix (e.g., '(points)')."""
+    base, sep, suffix = label.partition(" ")
+    short_base = concise_group_label(base)
+    return f"{short_base}{sep}{suffix}" if sep else short_base
+
+
+def build_description_html(group_tables: Iterable[GroupTable]) -> str:
+    """Construct HTML for a summary of group descriptions grouped by type."""
+    grouped: Dict[str, List[tuple[str, str]]] = defaultdict(list)
+    for table in group_tables:
+        label = concise_group_label(table.file_path.stem)
+        desc = table.description or "No description available."
+        grouped[table.group_type].append((label, desc))
+
+    if not grouped:
+        return "<em>No descriptions available for the loaded groups.</em>"
+
+    type_labels = {
+        "vocal_types": "Vocal types",
+        "dialects": "Dialects",
+    }
+    ordered_types = [
+        group_type for group_type in ("vocal_types", "dialects") if group_type in grouped
+    ] + [group_type for group_type in grouped.keys() if group_type not in {"vocal_types", "dialects"}]
+
+    sections: List[str] = [
+        "<div style='font-size:14px;font-weight:600;margin-bottom:6px;'>Group descriptions</div>"
+    ]
+    for group_type in ordered_types:
+        entries = sorted(grouped.get(group_type, []), key=lambda item: item[0])
+        if not entries:
+            continue
+        header = type_labels.get(group_type, group_type.replace("_", " ").title())
+        sections.append(
+            f"<div style='font-weight:600;margin-bottom:4px;'>{html.escape(header)}</div>"
+        )
+        list_items = []
+        for label, desc in entries:
+            safe_desc = html.escape(desc).replace("\n", "<br>")
+            safe_label = html.escape(label)
+            list_items.append(
+                f"<li style='margin-bottom:4px;'><span style='font-weight:600;'>{safe_label}</span>: {safe_desc}</li>"
+            )
+        sections.append(
+            "<ul style='margin:0 0 10px 18px;padding:0;'>"
+            + "".join(list_items)
+            + "</ul>"
+        )
+    return "".join(sections)
 
 
 def build_centroid_plot_payload(
@@ -1079,7 +1156,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
     if legend_renderers:
         legend = Legend(
             items=[
-                LegendItem(label=label, renderers=renders)
+                LegendItem(label=concise_display_label(label), renderers=renders)
                 for label, renders in legend_renderers.items()
                 if renders
             ],
@@ -1121,6 +1198,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
             if not counts:
                 continue
             src = ColumnDataSource({"x": x_indices, "y": counts})
+            legend_label = concise_group_label(label)
             renderer = sample_fig.line(
                 "x",
                 "y",
@@ -1129,7 +1207,9 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
                 source=src,
             )
             sample_sources[label] = src
-            sample_legend_items.append(LegendItem(label=f"{label} samples", renderers=[renderer]))
+            sample_legend_items.append(
+                LegendItem(label=f"{legend_label}", renderers=[renderer])
+            )
         if sample_legend_items:
             sample_legend = Legend(items=sample_legend_items, click_policy="hide", spacing=6)
             sample_fig.add_layout(sample_legend, "right")
@@ -1174,6 +1254,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
             bandwidth_legend_items: List[LegendItem] = []
             for label, values in group_bandwidth_series.items():
                 color = color_map.get(label, "#666666")
+                legend_label = concise_group_label(label)
                 src = ColumnDataSource({"x": x_indices, "y": values})
                 renderer = bandwidth_fig.line(
                     "x",
@@ -1184,7 +1265,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
                 )
                 bandwidth_sources[label] = src
                 bandwidth_legend_items.append(
-                    LegendItem(label=f"{label} bandwidth", renderers=[renderer])
+                    LegendItem(label=f"{legend_label}", renderers=[renderer])
                 )
             if bandwidth_legend_items:
                 bandwidth_legend = Legend(
@@ -1220,6 +1301,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
             area_legend_items: List[LegendItem] = []
             for label, values in group_isopleth_area_series.items():
                 color = color_map.get(label, "#666666")
+                legend_label = concise_group_label(label)
                 src = ColumnDataSource({"x": x_indices, "y": values})
                 renderer = area_fig.line(
                     "x",
@@ -1230,7 +1312,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
                 )
                 area_sources[label] = src
                 area_legend_items.append(
-                    LegendItem(label=f"{label} area", renderers=[renderer])
+                    LegendItem(label=f"{legend_label}", renderers=[renderer])
                 )
             if area_legend_items:
                 area_legend = Legend(
@@ -1268,6 +1350,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
                 if not any(count > 0 for count in counts):
                     continue
                 color = color_map.get(label, "#666666")
+                legend_label = concise_group_label(label)
                 src = ColumnDataSource({"x": x_indices, "y": counts})
                 renderer = monthly_fig.line(
                     "x",
@@ -1278,7 +1361,7 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
                 )
                 monthly_sources[label] = src
                 monthly_legend_items.append(
-                    LegendItem(label=f"{label} monthly samples", renderers=[renderer])
+                    LegendItem(label=f"{legend_label}", renderers=[renderer])
                 )
             if monthly_legend_items:
                 monthly_legend = Legend(
@@ -1353,8 +1436,23 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
     if chart_stack:
         charts_column = column(*chart_stack)
 
+    description_html = build_description_html(group_tables)
+    description_div = Div(
+        text=description_html,
+        width=plot.width,
+        styles={
+            "border": "1px solid #d9d9d9",
+            "padding": "8px",
+            "background-color": "#fafafa",
+            "margin-top": "6px",
+            "max-height": "240px",
+            "overflow-y": "auto",
+        },
+    )
+    map_column = column(plot, description_div)
+
     mode_state_source = ColumnDataSource({"mode": ["per_group"]})
-    layout = plot
+    layout = map_column
     if frame_labels:
         range_slider = RangeSlider(
             start=0,
@@ -1688,13 +1786,13 @@ for (const label in movement_sources) {
         slider_column = column(*slider_widgets)
         toggle_column = column(mode_toggle, toggle_info)
         controls_row = row(slider_column, toggle_column)
-        map_section: Any = row(plot, charts_column) if charts_column else plot
+        map_section: Any = row(map_column, charts_column) if charts_column else map_column
         components: List[Any] = [controls_row, map_section]
         if movement_layout is not None:
             components.append(movement_layout)
         layout = column(*components) if len(components) > 1 else map_section
     else:
-        map_section = row(plot, charts_column) if charts_column else plot
+        map_section = row(map_column, charts_column) if charts_column else map_column
         components = [map_section]
         if movement_layout is not None:
             components.append(movement_layout)
