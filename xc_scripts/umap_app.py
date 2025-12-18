@@ -15,7 +15,6 @@ To run:
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_acrocephalus_scirpaceus.yaml
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_phylloscopus_trochilus.yaml
 
-
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_prunella_modularis.yaml
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_phylloscopus_trochilus.yaml
     bokeh serve xc_scripts/umap_app.py --session-token-expiration 1800 --keep-alive 60000 --websocket-max-message-size 200000000 --show --args --config xc_configs/config_linaria_cannabina.yaml
