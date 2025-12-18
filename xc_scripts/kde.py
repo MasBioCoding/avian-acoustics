@@ -4,8 +4,14 @@ Utility helpers for working toward 2D kernel density estimates of bird recording
 
 To run the script:
     cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
-    python xc_scripts/kde.py --config xc_configs/config_curruca_communis.yaml
+    python xc_scripts/kde.py --config xc_configs/config_limosa_limosa.yaml
+    python xc_scripts/kde.py --config xc_configs/config_chloris_chloris.yaml
     python xc_scripts/kde.py --config xc_configs/config_regulus_ignicapilla.yaml
+    python xc_scripts/kde.py --config xc_configs/config_regulus_regulus.yaml
+    python xc_scripts/kde.py --config xc_configs/config_curruca_communis.yaml
+    python xc_scripts/kde.py --config xc_configs/config_carduelis_carduelis.yaml
+    python xc_scripts/kde.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
+    python xc_scripts/kde.py --config xc_configs/config_phylloscopus_trochilus.yaml
 
 For now the script focuses on loading the saved selection groups (vocal types and dialects)
 so that we can validate the data sources before computing any KDE overlays.
@@ -425,7 +431,7 @@ def generate_frame_periods(start_year: int, end_year: int) -> List[pd.Period]:
     """Return a list of monthly periods between start and end years (inclusive)."""
     periods: List[pd.Period] = []
     start = pd.Period(f"{start_year}-01", freq="M")
-    end = pd.Period(f"{end_year}-07", freq="M")
+    end = pd.Period(f"{end_year}-10", freq="M")
     current = start
     while current <= end:
         periods.append(current)
@@ -648,15 +654,21 @@ def build_static_isopleth_payload(
 def compute_weighted_bandwidth_average(
     bandwidth_series: Mapping[str, Sequence[Optional[float]]],
     sample_series: Mapping[str, Sequence[int]],
+    target_group: str = "dialects",
+    exclude_prefixes: Optional[Sequence[str]] = ("inter",),
 ) -> Optional[float]:
-    """Return the sample-weighted average bandwidth scalar across all groups/frames."""
+    """Return the sample-weighted average bandwidth scalar for a specific group type."""
     weighted_sum = 0.0
     total_weight = 0.0
+    target_prefix = f"{target_group}:"
     for label, bandwidths in bandwidth_series.items():
-        if not label.startswith("dialects:"):
+        if not label.startswith(target_prefix):
             continue
         _, _, remainder = label.partition(":")
-        if remainder.lower().startswith("inter"):
+        remainder_lower = remainder.lower()
+        if exclude_prefixes and any(
+            remainder_lower.startswith(prefix.lower()) for prefix in exclude_prefixes
+        ):
             continue
         counts = sample_series.get(label)
         if counts is None:
@@ -1020,35 +1032,52 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
         "per_group": group_isopleth_area_series
     }
 
-    weighted_bandwidth = compute_weighted_bandwidth_average(
+    weighted_dialect_bandwidth = compute_weighted_bandwidth_average(
         group_bandwidth_series,
         group_sample_counts,
+        target_group="dialects",
     )
-    if weighted_bandwidth is not None:
-        print(f"[INFO] Weighted bandwidth scalar (sample-weighted): {weighted_bandwidth:.4f}")
+    if weighted_dialect_bandwidth is not None:
+        print(
+            "[INFO] Weighted bandwidth scalar (dialects, sample-weighted): "
+            f"{weighted_dialect_bandwidth:.4f}"
+        )
     else:
-        print("[WARN] Weighted bandwidth scalar could not be computed (no data).")
+        print("[WARN] Dialect-weighted bandwidth scalar could not be computed (no data).")
 
-    if weighted_bandwidth is not None:
-        mode_static_lines["unified"] = {}
+    weighted_vocal_bandwidth = compute_weighted_bandwidth_average(
+        group_bandwidth_series,
+        group_sample_counts,
+        target_group="vocal_types",
+    )
+    if weighted_vocal_bandwidth is not None:
+        print(
+            "[INFO] Weighted bandwidth scalar (vocal types, sample-weighted): "
+            f"{weighted_vocal_bandwidth:.4f}"
+        )
+    else:
+        print("[WARN] Vocal-type-weighted bandwidth scalar could not be computed (no data).")
+
+    def register_unified_mode(mode_key: str, bandwidth_value: float) -> None:
+        mode_static_lines[mode_key] = {}
         for table in group_tables:
             label = f"{table.group_type}:{table.file_path.stem}"
             payload, xs_flat, ys_flat = build_static_isopleth_payload(
                 table,
                 contour_transformer,
-                bandwidth_override=weighted_bandwidth,
+                bandwidth_override=bandwidth_value,
             )
-            mode_static_lines["unified"][label] = payload
+            mode_static_lines[mode_key][label] = payload
             all_x.extend(xs_flat)
             all_y.extend(ys_flat)
 
         (
-            frame_labels_unified,
+            frame_labels_mode,
             unified_line_frames,
             unified_point_frames,
             unified_centroid_tracks,
             _,
-            unified_sample_counts,
+            _,
             unified_bandwidth_series,
             unified_area_series,
         ) = build_sliding_window_payloads(
@@ -1058,15 +1087,22 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
             equal_area_transformer,
             contour_transformer,
             point_transformer,
-            forced_bandwidth=weighted_bandwidth,
+            forced_bandwidth=bandwidth_value,
         )
-        if frame_labels_unified != frame_labels:
-            print("[WARN] Unified bandwidth frame labels differ from default; using default ordering.")
-        mode_line_frames["unified"] = unified_line_frames
-        mode_point_frames["unified"] = unified_point_frames
-        mode_centroid_tracks["unified"] = unified_centroid_tracks
-        mode_bandwidth_series["unified"] = unified_bandwidth_series
-        mode_area_series["unified"] = unified_area_series
+        if frame_labels_mode != frame_labels:
+            print(
+                f"[WARN] {mode_key} frame labels differ from default; using default ordering."
+            )
+        mode_line_frames[mode_key] = unified_line_frames
+        mode_point_frames[mode_key] = unified_point_frames
+        mode_centroid_tracks[mode_key] = unified_centroid_tracks
+        mode_bandwidth_series[mode_key] = unified_bandwidth_series
+        mode_area_series[mode_key] = unified_area_series
+
+    if weighted_dialect_bandwidth is not None:
+        register_unified_mode("dialects_weighted", weighted_dialect_bandwidth)
+    if weighted_vocal_bandwidth is not None:
+        register_unified_mode("vocal_types_weighted", weighted_vocal_bandwidth)
 
     mode_static_lines = {key: value for key, value in mode_static_lines.items()}
     mode_centroid_payloads: Dict[str, Dict[str, Dict[str, List[Optional[float]]]]] = {}
@@ -1275,10 +1311,18 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
                 )
                 bandwidth_fig.add_layout(bandwidth_legend, "right")
 
-        has_area_values = any(
-            any(val is not None for val in series)
-            for series in group_isopleth_area_series.values()
-        )
+        def _series_has_values(series_map: Mapping[str, Sequence[Optional[float]]]) -> bool:
+            return any(
+                any(val is not None for val in series)
+                for series in series_map.values()
+            )
+
+        has_area_values = _series_has_values(mode_area_series.get("per_group", {}))
+        if not has_area_values:
+            for area_map in mode_area_series.values():
+                if _series_has_values(area_map):
+                    has_area_values = True
+                    break
         if has_area_values:
             area_fig = figure(
                 title="50% isopleth area per frame",
@@ -1299,7 +1343,15 @@ def render_isopleth_map(group_tables: Iterable[GroupTable]) -> None:
             )
             area_fig.add_layout(area_highlight)
             area_legend_items: List[LegendItem] = []
-            for label, values in group_isopleth_area_series.items():
+            area_labels = sorted(
+                {
+                    label
+                    for area_map in mode_area_series.values()
+                    for label in area_map.keys()
+                }
+            )
+            for label in area_labels:
+                values = group_isopleth_area_series.get(label) or [None] * len(x_indices)
                 color = color_map.get(label, "#666666")
                 legend_label = concise_group_label(label)
                 src = ColumnDataSource({"x": x_indices, "y": values})
@@ -1631,22 +1683,39 @@ if (sample_range) {
         )
         range_slider.js_on_change("value", range_callback)
 
-        toggle_label = "Unified bandwidth (weighted average of dialects)"
-        mode_toggle = Toggle(
-            label=toggle_label,
-            button_type="success" if weighted_bandwidth is not None else "default",
+        dialect_toggle = Toggle(
+            label="Unified bandwidth (weighted average of dialects)",
+            button_type="success" if weighted_dialect_bandwidth is not None else "default",
             width=320,
             active=False,
         )
-        if weighted_bandwidth is None:
-            mode_toggle.disabled = True
-            toggle_info = Div(
+        if weighted_dialect_bandwidth is None:
+            dialect_toggle.disabled = True
+            dialect_info = Div(
                 text="Unified bandwidth unavailable (insufficient dialect coverage).",
                 width=320,
             )
         else:
-            toggle_info = Div(
-                text=f"Weighted scalar: {weighted_bandwidth:.4f}",
+            dialect_info = Div(
+                text=f"Weighted scalar: {weighted_dialect_bandwidth:.4f}",
+                width=320,
+            )
+
+        vocal_toggle = Toggle(
+            label="Unified bandwidth (weighted average of vocal types)",
+            button_type="success" if weighted_vocal_bandwidth is not None else "default",
+            width=320,
+            active=False,
+        )
+        if weighted_vocal_bandwidth is None:
+            vocal_toggle.disabled = True
+            vocal_info = Div(
+                text="Unified bandwidth unavailable (insufficient vocal-type coverage).",
+                width=320,
+            )
+        else:
+            vocal_info = Div(
+                text=f"Weighted scalar: {weighted_vocal_bandwidth:.4f}",
                 width=320,
             )
 
@@ -1654,7 +1723,8 @@ if (sample_range) {
         empty_centroid_js = _empty_centroid_payload(frame_labels)
         toggle_callback = CustomJS(
             args=dict(
-                toggle=mode_toggle,
+                dialect_toggle=dialect_toggle,
+                vocal_toggle=vocal_toggle,
                 slider=window_slider,
                 labels=frame_labels,
                 title=plot.title,
@@ -1684,10 +1754,42 @@ if (sample_range) {
                 empty_centroid=empty_centroid_js,
             ),
             code="""
-const hasUnified = !!mode_line_frames.unified;
-let mode = toggle.active && hasUnified ? "unified" : "per_group";
-if (toggle.active && !hasUnified) {
-    toggle.active = false;
+const dialectMode = "dialects_weighted";
+const vocalMode = "vocal_types_weighted";
+const hasDialect = !!mode_line_frames[dialectMode];
+const hasVocal = !!mode_line_frames[vocalMode];
+if (dialect_toggle && !hasDialect) {
+    dialect_toggle.active = false;
+}
+if (vocal_toggle && !hasVocal) {
+    vocal_toggle.active = false;
+}
+let mode = "per_group";
+const dialectActive = !!(dialect_toggle && dialect_toggle.active);
+const vocalActive = !!(vocal_toggle && vocal_toggle.active);
+if (dialectActive && vocalActive) {
+    if (cb_obj === vocal_toggle && hasVocal) {
+        mode = vocalMode;
+        if (dialect_toggle) { dialect_toggle.active = false; }
+    } else if (cb_obj === dialect_toggle && hasDialect) {
+        mode = dialectMode;
+        if (vocal_toggle) { vocal_toggle.active = false; }
+    } else if (hasVocal) {
+        mode = vocalMode;
+        if (dialect_toggle) { dialect_toggle.active = false; }
+    } else if (hasDialect) {
+        mode = dialectMode;
+        if (vocal_toggle) { vocal_toggle.active = false; }
+    }
+} else if (vocalActive && hasVocal) {
+    mode = vocalMode;
+    if (dialect_toggle) { dialect_toggle.active = false; }
+} else if (dialectActive && hasDialect) {
+    mode = dialectMode;
+    if (vocal_toggle) { vocal_toggle.active = false; }
+} else {
+    if (dialect_toggle) { dialect_toggle.active = false; }
+    if (vocal_toggle) { vocal_toggle.active = false; }
 }
 const modeData = mode_source.data.mode || ["per_group"];
 modeData[0] = mode;
@@ -1777,14 +1879,20 @@ for (const label in movement_sources) {
 }
 """,
         )
-        mode_toggle.js_on_change("active", toggle_callback)
+        dialect_toggle.js_on_change("active", toggle_callback)
+        vocal_toggle.js_on_change("active", toggle_callback)
 
         slider_widgets = [range_slider]
         if chunk_slider is not None:
             slider_widgets.append(chunk_slider)
         slider_widgets.append(window_slider)
         slider_column = column(*slider_widgets)
-        toggle_column = column(mode_toggle, toggle_info)
+        toggle_column = column(
+            dialect_toggle,
+            dialect_info,
+            vocal_toggle,
+            vocal_info,
+        )
         controls_row = row(slider_column, toggle_column)
         map_section: Any = row(map_column, charts_column) if charts_column else map_column
         components: List[Any] = [controls_row, map_section]
