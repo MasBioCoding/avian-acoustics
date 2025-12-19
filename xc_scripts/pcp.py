@@ -25,6 +25,7 @@ import yaml
 from bokeh.io import curdoc
 from bokeh.layouts import column, row
 from bokeh.models import (
+    BoxSelectTool,
     Button,
     CheckboxGroup,
     ColumnDataSource,
@@ -46,7 +47,9 @@ CATEGORY_FOLDERS = {
     "Dialects": "dialects",
     "Annotate 1": "annotate_1",
     "Annotate 2": "annotate_2",
+    "PCP groups": "pcp_groups",
 }
+ACTIVE_PCP_GROUPS_LABEL = "active pcp_groups"
 COLOR_PALETTE = [
     "#4477AA",
     "#EE6677",
@@ -329,7 +332,9 @@ def list_species_slugs(groups_root: Path) -> list[str]:
     return sorted(entry.name for entry in groups_root.iterdir() if entry.is_dir())
 
 
-def collect_group_entries(category_root: Path) -> list[dict[str, Any]]:
+def collect_group_entries(
+    category_root: Path, *, label_from_stem: bool = False
+) -> list[dict[str, Any]]:
     """Gather group entries for a given category directory."""
 
     if not category_root.exists():
@@ -357,9 +362,10 @@ def collect_group_entries(category_root: Path) -> list[dict[str, Any]]:
                 description = ""
 
         entry_count = count_csv_rows(csv_path) if csv_path.exists() else 0
+        label_value = stem if label_from_stem else f"group_{idx}"
         entries.append(
             {
-                "label": f"group_{idx}",
+                "label": label_value,
                 "stem": stem,
                 "description": description,
                 "csv_path": str(csv_path) if csv_path.exists() else "",
@@ -376,9 +382,12 @@ def collect_groups_for_species(
     """Return category -> group entries for a species slug."""
 
     species_root = groups_root / species_slug
-    grouped: dict[str, list[dict[str, str]]] = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for category_label, folder_name in CATEGORY_FOLDERS.items():
-        grouped[category_label] = collect_group_entries(species_root / folder_name)
+        grouped[category_label] = collect_group_entries(
+            species_root / folder_name,
+            label_from_stem=folder_name == "pcp_groups",
+        )
     return grouped
 
 
@@ -488,6 +497,57 @@ def key_to_str(key: tuple[str, int] | None) -> str:
     return f"{key[0]}_{key[1]}"
 
 
+def sanitize_group_name(raw_name: str) -> str:
+    """Normalize a user-supplied group name into a safe filename stem."""
+
+    if not raw_name:
+        return ""
+    stripped = raw_name.strip()
+    if not stripped:
+        return ""
+    cleaned_chars: list[str] = []
+    for char in stripped:
+        if char.isascii() and (char.isalnum() or char in {"-", "_"}):
+            cleaned_chars.append(char)
+        elif char in {" ", "."}:
+            cleaned_chars.append("_")
+        else:
+            cleaned_chars.append("_")
+    return "".join(cleaned_chars).strip("_")
+
+
+def format_pcp_group_description(
+    description: str,
+    umap_params: dict[str, Any] | None,
+    hdbscan_params: dict[str, Any] | None,
+) -> str:
+    """Create the .txt contents for a saved PCP group."""
+
+    lines: list[str] = ["Description:"]
+    desc_clean = (description or "").strip()
+    lines.append(desc_clean or "No description provided.")
+    lines.append("")
+    lines.append("UMAP parameters:")
+    if umap_params:
+        lines.append(f"- n_components: {umap_params.get('n_components', 'n/a')}")
+        lines.append(f"- n_neighbors: {umap_params.get('n_neighbors', 'n/a')}")
+        lines.append(f"- min_dist: {umap_params.get('min_dist', 'n/a')}")
+        lines.append(f"- metric: {umap_params.get('metric', 'n/a')}")
+        lines.append(f"- seed: {umap_params.get('seed', 'n/a')}")
+    else:
+        lines.append("- not run yet")
+    lines.append("")
+    lines.append("HDBSCAN parameters:")
+    if hdbscan_params:
+        lines.append(
+            f"- min_cluster_size: {hdbscan_params.get('min_cluster_size', 'n/a')}"
+        )
+        lines.append(f"- min_samples: {hdbscan_params.get('min_samples', 'n/a')}")
+    else:
+        lines.append("- not run yet")
+    return "\n".join(lines).strip() + "\n"
+
+
 def _hex_component(value: float) -> str:
     return f"{int(max(0, min(255, round(value)))):02x}"
 
@@ -547,6 +607,11 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     current_hdbscan_color_map: dict[str, str] = {}
     current_point_base: dict[str, list[Any]] | None = None
     current_point_dims = 0
+    active_pcp_groups: list[dict[str, Any]] = []
+    next_pcp_group_id = 1
+    last_umap_params: dict[str, Any] | None = None
+    last_hdbscan_params: dict[str, Any] | None = None
+    last_save_nonce = ""
 
     safe_options = species_options or ["No species found"]
     species_select = Select(
@@ -830,6 +895,39 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         options=["Groups", "Latitude", "Longitude", "Altitude", "HDBSCAN"],
         width=160,
     )
+    active_pcp_groups_header = Div(
+        text=ACTIVE_PCP_GROUPS_LABEL,
+        styles={
+            "font-weight": "600",
+            "margin-top": "6px",
+            "margin-bottom": "2px",
+            "color": "#211b10",
+        },
+    )
+    active_pcp_groups_placeholder = Div(
+        text="<em>No active groups.</em>",
+        render_as_text=False,
+        styles={"color": "#4a452c"},
+    )
+    active_pcp_groups_checkbox = CheckboxGroup(labels=[], active=[], width=150)
+    active_pcp_groups_section = column(
+        active_pcp_groups_header,
+        active_pcp_groups_placeholder,
+        spacing=2,
+        width=150,
+        sizing_mode="fixed",
+    )
+    create_group_button = Button(
+        label="Create group from selection", button_type="primary", width=220
+    )
+    clear_groups_button = Button(label="Clear groups", button_type="warning", width=220)
+    save_group_button = Button(label="Save group", button_type="success", width=220)
+    annotation_status_box = Div(
+        text="<em>Select points with box select to create a group.</em>",
+        render_as_text=False,
+        styles={"color": "#2d2616", "margin-top": "6px"},
+        width=220,
+    )
     pcp_status_box = Div(
         text="<em>Calculate to generate the parallel coordinates plot.</em>",
         render_as_text=False,
@@ -864,6 +962,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "playlist_active": [],
         }
     )
+    save_request_source = ColumnDataSource(
+        data={"name": [], "description": [], "nonce": []}
+    )
     pcp_plot = figure(
         height=620,
         sizing_mode="stretch_width",
@@ -881,7 +982,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     )
     tap_tool = TapTool()
     pcp_plot.add_tools(tap_tool)
+    box_select_tool = BoxSelectTool()
+    pcp_plot.add_tools(box_select_tool)
     pcp_plot.toolbar.active_tap = tap_tool
+    pcp_plot.toolbar.active_drag = box_select_tool
     pcp_plot.circle(
         x="x",
         y="y",
@@ -1018,14 +1122,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             color_assignments_box.text = "<em>Using gradient color mode.</em>"
             return
 
-        active_labels: list[tuple[str, str]] = []
-        for category_label, cb in color_checkbox_groups.items():
-            for idx in cb.active:
-                if 0 <= idx < len(cb.labels):
-                    active_labels.append((category_label, cb.labels[idx]))
-
+        active_entries = collect_color_entries()
         html_entries: list[str] = []
-        for idx, (cat, label) in enumerate(active_labels):
+        for idx, (cat, entry) in enumerate(active_entries):
+            label = entry.get("label") or entry.get("stem") or f"group_{idx + 1}"
             color = COLOR_PALETTE[idx] if idx < len(COLOR_PALETTE) else "#b0b0b0"
             color_box = (
                 f"<span style='display:inline-block;width:14px;height:14px;"
@@ -1049,6 +1149,45 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
     hdbscan_checklist.on_change("active", on_hdbscan_checklist_change)
 
+    def on_active_pcp_groups_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        update_color_assignments()
+        apply_color_selection()
+
+    active_pcp_groups_checkbox.on_change("active", on_active_pcp_groups_change)
+
+    def refresh_active_pcp_groups_panel(select_new: bool = False) -> None:
+        """Sync the active PCP group checklist with the current group list."""
+
+        if not active_pcp_groups:
+            active_pcp_groups_checkbox.labels = []
+            active_pcp_groups_checkbox.active = []
+            active_pcp_groups_section.children = [
+                active_pcp_groups_header,
+                active_pcp_groups_placeholder,
+            ]
+            save_group_button.disabled = True
+            clear_groups_button.disabled = True
+            return
+
+        labels = [group.get("label", "group") for group in active_pcp_groups]
+        active_pcp_groups_checkbox.labels = labels
+        active_indices = set(active_pcp_groups_checkbox.active)
+        if select_new:
+            active_indices.add(len(labels) - 1)
+        active_pcp_groups_checkbox.active = sorted(
+            idx for idx in active_indices if 0 <= idx < len(labels)
+        )
+        active_pcp_groups_section.children = [
+            active_pcp_groups_header,
+            active_pcp_groups_checkbox,
+        ]
+        save_group_button.disabled = False
+        clear_groups_button.disabled = False
+
+    refresh_active_pcp_groups_panel()
+
     def collect_selected_entries() -> list[tuple[str, dict[str, Any]]]:
         selected_entries: list[tuple[str, Any]] = []
         for category_label, checkbox in umap_checkbox_groups.items():
@@ -1067,6 +1206,11 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             for idx in checkbox.active:
                 if 0 <= idx < len(items):
                     selected_entries.append((category_label, items[idx]))
+        for idx in active_pcp_groups_checkbox.active:
+            if 0 <= idx < len(active_pcp_groups):
+                selected_entries.append(
+                    (ACTIVE_PCP_GROUPS_LABEL, active_pcp_groups[idx])
+                )
         return selected_entries
 
     def clear_hdbscan_results() -> None:
@@ -1186,23 +1330,35 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             if not color_entries:
                 return [PCP_BASE_COLOR] * point_count, [False] * point_count
 
+            def _entry_key_strings(entry: dict[str, Any]) -> set[str]:
+                key_set = entry.get("key_set")
+                if isinstance(key_set, set):
+                    return key_set
+                if isinstance(key_set, list):
+                    return {str(key) for key in key_set if key}
+
+                csv_path = Path(entry.get("csv_path") or "")
+                if not csv_path.exists():
+                    return set()
+                try:
+                    group_df = pd.read_csv(csv_path)
+                except Exception:
+                    return set()
+                group_keys_df = append_key_column(group_df)
+                key_strings: set[str] = set()
+                for key in group_keys_df["__key__"]:
+                    key_str = key_to_str(key)
+                    if key_str:
+                        key_strings.add(key_str)
+                return key_strings
+
             key_to_color: dict[str, str] = {}
             for color_idx, (_category_label, entry) in enumerate(color_entries):
                 if color_idx >= len(COLOR_PALETTE):
                     break
-                csv_path = Path(entry.get("csv_path") or "")
-                if not csv_path.exists():
-                    continue
-                try:
-                    group_df = pd.read_csv(csv_path)
-                except Exception:
-                    continue
-                group_keys_df = append_key_column(group_df)
                 color_value = COLOR_PALETTE[color_idx]
-                for key in group_keys_df["__key__"]:
-                    key_str = key_to_str(key)
-                    if key_str:
-                        key_to_color[key_str] = color_value
+                for key_str in _entry_key_strings(entry):
+                    key_to_color[key_str] = color_value
 
             if not key_to_color:
                 return [PCP_BASE_COLOR] * point_count, [False] * point_count
@@ -1294,6 +1450,247 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             return
         colors, playlist_active = _apply_group_colors()
         _update_source(colors, base_alpha, playlist_active)
+
+    def selected_record_indices() -> list[int]:
+        """Return unique record indices from the current point selection."""
+
+        selected_points = list(pcp_points_source.selected.indices)
+        if not selected_points:
+            return []
+        record_indices = pcp_points_source.data.get("record_index", [])
+        if not record_indices:
+            return []
+        unique_indices: set[int] = set()
+        for idx in selected_points:
+            if 0 <= idx < len(record_indices):
+                try:
+                    unique_indices.add(int(record_indices[idx]))
+                except (TypeError, ValueError):
+                    continue
+        return sorted(unique_indices)
+
+    def create_group_from_selection() -> None:
+        """Create an active PCP group from the current box selection."""
+
+        nonlocal active_pcp_groups, next_pcp_group_id
+        if not pcp_source.data.get("key"):
+            annotation_status_box.text = (
+                "<em>Run Calculate to populate the plot before creating groups.</em>"
+            )
+            return
+
+        record_indices = selected_record_indices()
+        if not record_indices:
+            annotation_status_box.text = (
+                "<em>No points selected. Use box select to choose points first.</em>"
+            )
+            return
+
+        keys = pcp_source.data.get("key", [])
+        key_set = {
+            keys[idx]
+            for idx in record_indices
+            if 0 <= idx < len(keys) and keys[idx]
+        }
+        if not key_set:
+            annotation_status_box.text = (
+                "<em>Selected points did not map to valid recordings.</em>"
+            )
+            return
+
+        group_label = f"group_{next_pcp_group_id}"
+        active_pcp_groups.append(
+            {
+                "id": next_pcp_group_id,
+                "label": group_label,
+                "key_set": key_set,
+            }
+        )
+        next_pcp_group_id += 1
+        refresh_active_pcp_groups_panel(select_new=True)
+        annotation_status_box.text = (
+            f"Created {html.escape(group_label)} with {len(key_set)} recordings."
+        )
+        update_color_assignments()
+        apply_color_selection()
+
+    def clear_active_pcp_groups(show_status: bool = True) -> None:
+        """Clear all active PCP groups and reset group-related UI."""
+
+        nonlocal active_pcp_groups, next_pcp_group_id
+        active_pcp_groups = []
+        next_pcp_group_id = 1
+        refresh_active_pcp_groups_panel()
+        if show_status:
+            annotation_status_box.text = "<em>Cleared active PCP groups.</em>"
+        update_color_assignments()
+        apply_color_selection()
+
+    def save_active_pcp_groups(group_name: str, description_text: str) -> None:
+        """Persist the selected active PCP groups to disk."""
+
+        if current_species_slug is None:
+            annotation_status_box.text = "<em>Load a species before saving groups.</em>"
+            return
+        if not active_pcp_groups:
+            annotation_status_box.text = "<em>No active groups to save.</em>"
+            return
+
+        active_indices = active_pcp_groups_checkbox.active
+        if not active_indices:
+            annotation_status_box.text = (
+                "<em>Select at least one active PCP group to save.</em>"
+            )
+            return
+
+        selected_key_set: set[str] = set()
+        for idx in active_indices:
+            if 0 <= idx < len(active_pcp_groups):
+                key_set = active_pcp_groups[idx].get("key_set", set())
+                if isinstance(key_set, set):
+                    selected_key_set.update(key_set)
+                elif isinstance(key_set, list):
+                    selected_key_set.update(str(key) for key in key_set if key)
+
+        if not selected_key_set:
+            annotation_status_box.text = (
+                "<em>The selected active groups contain no recordings.</em>"
+            )
+            return
+
+        key_values = list(pcp_source.data.get("key", []))
+        xcid_values = list(pcp_source.data.get("xcid", []))
+        clip_values = list(pcp_source.data.get("clip_index", []))
+        if not key_values or not xcid_values or not clip_values:
+            annotation_status_box.text = (
+                "<em>PCP data is missing xcid/clip_index; run Calculate first.</em>"
+            )
+            return
+
+        rows: list[dict[str, Any]] = []
+        skipped = 0
+        seen_keys: set[str] = set()
+        for idx, key in enumerate(key_values):
+            if key not in selected_key_set or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            if idx >= len(xcid_values) or idx >= len(clip_values):
+                continue
+            xcid_value = xcid_values[idx]
+            if xcid_value is None or pd.isna(xcid_value):
+                skipped += 1
+                continue
+            xcid_str = str(xcid_value).strip()
+            if not xcid_str:
+                skipped += 1
+                continue
+            clip_idx = _coerce_clip_index(clip_values[idx])
+            if clip_idx is None:
+                skipped += 1
+                continue
+            rows.append({"xcid": xcid_str, "clip_index": clip_idx})
+
+        if not rows:
+            annotation_status_box.text = (
+                "<em>No valid xcid/clip_index rows were found to save.</em>"
+            )
+            return
+
+        base_stem = sanitize_group_name(Path(str(group_name)).stem)
+        if not base_stem:
+            annotation_status_box.text = "<em>Please provide a non-empty group name.</em>"
+            return
+
+        output_dir = groups_root / current_species_slug / "pcp_groups"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            annotation_status_box.text = (
+                f"<span style='color:#b00;'>Failed to prepare group folder: "
+                f"{html.escape(str(exc))}</span>"
+            )
+            return
+
+        csv_path = output_dir / f"{base_stem}.csv"
+        txt_path = output_dir / f"{base_stem}.txt"
+        counter = 1
+        while csv_path.exists() or txt_path.exists():
+            csv_path = output_dir / f"{base_stem}_{counter}.csv"
+            txt_path = output_dir / f"{base_stem}_{counter}.txt"
+            counter += 1
+
+        description_payload = format_pcp_group_description(
+            description_text, last_umap_params, last_hdbscan_params
+        )
+
+        try:
+            pd.DataFrame(rows).to_csv(csv_path, index=False)
+            txt_path.write_text(description_payload, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            annotation_status_box.text = (
+                f"<span style='color:#b00;'>Failed to save group: "
+                f"{html.escape(str(exc))}</span>"
+            )
+            return
+
+        try:
+            relative_display = csv_path.relative_to(root_path)
+        except ValueError:
+            relative_display = csv_path
+
+        message = (
+            f"Saved {len(rows)} recordings to {html.escape(str(relative_display))} "
+            "with description saved alongside the CSV."
+        )
+        if skipped:
+            message += f" Skipped {skipped} row(s) without clip indices."
+        annotation_status_box.text = message
+
+    def on_save_request(
+        attr: str, old: dict[str, list[str]], new: dict[str, list[str]]
+    ) -> None:
+        """Handle save requests issued from the JS prompt."""
+
+        nonlocal last_save_nonce
+        nonce_list = new.get("nonce", [])
+        if not nonce_list:
+            return
+        nonce = str(nonce_list[0])
+        if not nonce or nonce == last_save_nonce:
+            return
+        last_save_nonce = nonce
+        name_list = new.get("name", [])
+        desc_list = new.get("description", [])
+        group_name = name_list[0] if name_list else ""
+        description_text = desc_list[0] if desc_list else ""
+        save_active_pcp_groups(group_name, description_text)
+
+    create_group_button.on_click(create_group_from_selection)
+    clear_groups_button.on_click(clear_active_pcp_groups)
+
+    save_group_button.js_on_click(
+        CustomJS(
+            args=dict(save_source=save_request_source),
+            code="""
+            const name = window.prompt("Enter a name for this PCP group:");
+            if (name === null) {
+                return;
+            }
+            const trimmed = name.trim();
+            const desc = window.prompt("Enter a description for this PCP group:");
+            if (desc === null) {
+                return;
+            }
+            save_source.data = {
+                name: [trimmed],
+                description: [desc],
+                nonce: [String(Date.now())],
+            };
+            save_source.change.emit();
+            """,
+        )
+    )
+    save_request_source.on_change("data", on_save_request)
 
     def update_pcp_plot(projection: np.ndarray, metadata_df: pd.DataFrame) -> None:
         """Populate the parallel coordinates plot from UMAP output."""
@@ -1564,6 +1961,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         all_toggle_count.text = f"(raw: {metadata_total}, unique: {metadata_unique})"
         current_umap_projection = None
         current_umap_metadata = None
+        clear_active_pcp_groups(show_status=False)
+        annotation_status_box.text = (
+            "<em>Select points with box select to create a group.</em>"
+        )
         pcp_source.data = {
             "xs": [],
             "ys": [],
@@ -1724,7 +2125,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             )
 
     def compute_umap_projection() -> None:
-        nonlocal current_umap_projection, current_umap_metadata
+        nonlocal current_umap_projection, current_umap_metadata, last_umap_params
         clear_hdbscan_results()
         if current_species_slug is None or current_embeddings_path is None:
             umap_status_box.text = "<em>Please load a species first.</em>"
@@ -1883,6 +2284,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             missing_metadata_warning.visible = False
             return
 
+        last_umap_params = {
+            "n_components": n_components,
+            "n_neighbors": n_neighbors,
+            "min_dist": min_dist,
+            "metric": metric,
+            "seed": seed,
+        }
+
         try:
             mapper = umap.UMAP(
                 n_components=n_components,
@@ -1924,7 +2333,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     def compute_hdbscan_clusters() -> None:
         """Compute HDBSCAN labels for the current UMAP projection."""
 
-        nonlocal current_hdbscan_labels, current_hdbscan_color_map
+        nonlocal current_hdbscan_labels, current_hdbscan_color_map, last_hdbscan_params
         if current_umap_projection is None or current_umap_metadata is None:
             hdbscan_status_box.text = "<em>Run UMAP before computing HDBSCAN.</em>"
             return
@@ -1943,6 +2352,11 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         except (TypeError, ValueError):
             hdbscan_status_box.text = "<em>Invalid HDBSCAN parameter values.</em>"
             return
+
+        last_hdbscan_params = {
+            "min_cluster_size": min_cluster_size,
+            "min_samples": min_samples,
+        }
 
         hdbscan_compute_button.label = "Computing..."
         hdbscan_compute_button.disabled = True
@@ -2232,6 +2646,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         color_title,
         color_mode_select,
         color_sections_holder,
+        active_pcp_groups_section,
         hdbscan_clusters_label,
         hdbscan_checklist,
         color_assignments_box,
@@ -2258,6 +2673,31 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         ),
         descriptions_box,
         width=520,
+        sizing_mode="fixed",
+        css_classes=["control-card"],
+        styles={
+            "background-color": CARD_BACKGROUND_COLOR,
+            "border-radius": "12px",
+            "padding": "12px 14px",
+            "box-shadow": "0 3px 10px rgba(0, 0, 0, 0.08)",
+        },
+    )
+
+    annotation_panel = column(
+        Div(
+            text="Annotation",
+            styles={
+                "font-size": "15px",
+                "font-weight": "600",
+                "margin-bottom": "6px",
+                "color": "#2d2616",
+            },
+        ),
+        create_group_button,
+        clear_groups_button,
+        save_group_button,
+        annotation_status_box,
+        width=260,
         sizing_mode="fixed",
         css_classes=["control-card"],
         styles={
@@ -2421,6 +2861,7 @@ html, body {{
     second_row = row(
         umap_parameters_panel,
         hdbscan_panel,
+        annotation_panel,
         counts_panel,
         description_panel,
         sizing_mode="scale_width",
