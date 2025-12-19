@@ -70,6 +70,7 @@ DEFAULT_UMAP_COMPONENTS = 6
 DEFAULT_UMAP_NEIGHBORS = 15
 DEFAULT_UMAP_MIN_DIST = 0.0
 DEFAULT_UMAP_METRIC = "euclidean"
+DEFAULT_UMAP_SEED = 42
 PCP_BASE_COLOR = "#4477AA"
 PCP_OTHER_COLOR = "#b0b0b0"
 GRADIENT_LOW = "#2b83ba"
@@ -626,6 +627,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         value=DEFAULT_UMAP_METRIC,
         width=120,
     )
+    umap_seed_spinner = Spinner(
+        title="Seed",
+        low=0,
+        high=2_147_483_647,
+        step=1,
+        value=DEFAULT_UMAP_SEED,
+        width=120,
+    )
     missing_metadata_warning = Div(
         text="",
         render_as_text=False,
@@ -662,6 +671,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         umap_neighbors_spinner,
         umap_min_dist_spinner,
         umap_metric_input,
+        umap_seed_spinner,
         calculate_button,
         missing_metadata_warning,
         umap_status_box,
@@ -1867,6 +1877,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             n_neighbors = int(umap_neighbors_spinner.value or DEFAULT_UMAP_NEIGHBORS)
             min_dist = float(umap_min_dist_spinner.value or DEFAULT_UMAP_MIN_DIST)
             metric = umap_metric_input.value.strip() or DEFAULT_UMAP_METRIC
+            seed = int(umap_seed_spinner.value or DEFAULT_UMAP_SEED)
         except (TypeError, ValueError):
             umap_status_box.text = "<em>Invalid UMAP parameter values.</em>"
             missing_metadata_warning.visible = False
@@ -1878,6 +1889,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 n_neighbors=n_neighbors,
                 min_dist=min_dist,
                 metric=metric,
+                random_state=seed,
             )
             projection = mapper.fit_transform(embedding_matrix)
         except Exception as exc:  # noqa: BLE001

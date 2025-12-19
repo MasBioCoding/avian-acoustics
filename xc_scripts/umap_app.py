@@ -26,6 +26,7 @@ import argparse
 import base64
 import errno
 import json
+import pynndescent
 import sys
 from datetime import datetime
 import yaml
