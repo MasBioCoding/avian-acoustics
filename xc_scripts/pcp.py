@@ -47,6 +47,7 @@ CATEGORY_FOLDERS = {
     "Dialects": "dialects",
     "Annotate 1": "annotate_1",
     "Annotate 2": "annotate_2",
+    "HDBSCAN groups": "hdbscan",
     "PCP groups": "pcp_groups",
 }
 ACTIVE_PCP_GROUPS_LABEL = "active pcp_groups"
@@ -386,7 +387,7 @@ def collect_groups_for_species(
     for category_label, folder_name in CATEGORY_FOLDERS.items():
         grouped[category_label] = collect_group_entries(
             species_root / folder_name,
-            label_from_stem=folder_name == "pcp_groups",
+            label_from_stem=folder_name in {"pcp_groups", "hdbscan"},
         )
     return grouped
 
@@ -612,6 +613,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     last_umap_params: dict[str, Any] | None = None
     last_hdbscan_params: dict[str, Any] | None = None
     last_save_nonce = ""
+    last_hdbscan_save_nonce = ""
 
     safe_options = species_options or ["No species found"]
     species_select = Select(
@@ -768,8 +770,32 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         width=120,
     )
     hdbscan_compute_button = Button(label="Compute", button_type="primary", width=100)
+    hdbscan_save_button = Button(
+        label="Save HDBSCAN groups",
+        button_type="success",
+        width=200,
+        disabled=True,
+    )
     hdbscan_status_box = Div(
         text="<em>Run UMAP first, then compute clusters.</em>",
+        render_as_text=False,
+        styles={"color": "#2d2616", "margin-top": "6px"},
+        width=240,
+    )
+    energy_distance_button = Button(
+        label="Energy distance",
+        button_type="primary",
+        width=160,
+        disabled=True,
+    )
+    energy_distance_status_box = Div(
+        text="<em>Compute HDBSCAN to enable energy distance.</em>",
+        render_as_text=False,
+        styles={"color": "#2d2616", "margin-top": "6px"},
+        width=240,
+    )
+    hdbscan_save_status_box = Div(
+        text="<em>Compute HDBSCAN to enable saving clusters.</em>",
         render_as_text=False,
         styles={"color": "#2d2616", "margin-top": "6px"},
         width=240,
@@ -788,6 +814,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hdbscan_min_samples_spinner,
         hdbscan_compute_button,
         hdbscan_status_box,
+        energy_distance_button,
+        energy_distance_status_box,
+        hdbscan_save_button,
+        hdbscan_save_status_box,
         width=260,
         sizing_mode="fixed",
         css_classes=["control-card"],
@@ -963,6 +993,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         }
     )
     save_request_source = ColumnDataSource(
+        data={"name": [], "description": [], "nonce": []}
+    )
+    hdbscan_save_request_source = ColumnDataSource(
         data={"name": [], "description": [], "nonce": []}
     )
     pcp_plot = figure(
@@ -1219,6 +1252,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         nonlocal current_hdbscan_labels, current_hdbscan_color_map
         current_hdbscan_labels = None
         current_hdbscan_color_map = {}
+        energy_distance_button.disabled = True
+        energy_distance_status_box.text = (
+            "<em>Compute HDBSCAN to enable energy distance.</em>"
+        )
+        hdbscan_save_button.disabled = True
+        hdbscan_save_status_box.text = (
+            "<em>Compute HDBSCAN to enable saving clusters.</em>"
+        )
         hdbscan_checklist.labels = []
         hdbscan_checklist.active = []
         hdbscan_checklist.visible = False
@@ -1451,6 +1492,128 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         colors, playlist_active = _apply_group_colors()
         _update_source(colors, base_alpha, playlist_active)
 
+    def find_coordinate_columns(metadata_df: pd.DataFrame) -> tuple[str, str] | None:
+        """Return latitude/longitude column names when present (case-insensitive)."""
+
+        col_map = {str(col).lower(): str(col) for col in metadata_df.columns}
+        lat_col = next(
+            (col_map[name] for name in ("lat", "latitude") if name in col_map),
+            None,
+        )
+        lon_col = next(
+            (col_map[name] for name in ("lon", "longitude", "lng") if name in col_map),
+            None,
+        )
+        if not lat_col or not lon_col:
+            return None
+        return lat_col, lon_col
+
+    def compute_energy_distance() -> None:
+        """Compute energy distance for each HDBSCAN cluster vs all other points."""
+
+        if current_umap_metadata is None or current_hdbscan_labels is None:
+            energy_distance_status_box.text = (
+                "<em>Run HDBSCAN before computing energy distance.</em>"
+            )
+            return
+
+        labels = current_hdbscan_labels
+        if len(labels) != len(current_umap_metadata):
+            energy_distance_status_box.text = (
+                "<em>Cluster labels do not align with metadata.</em>"
+            )
+            return
+
+        coord_cols = find_coordinate_columns(current_umap_metadata)
+        if coord_cols is None:
+            energy_distance_status_box.text = (
+                "<em>No latitude/longitude columns found in metadata.</em>"
+            )
+            return
+        lat_col, lon_col = coord_cols
+
+        lat_series = pd.to_numeric(current_umap_metadata[lat_col], errors="coerce")
+        lon_series = pd.to_numeric(current_umap_metadata[lon_col], errors="coerce")
+        valid_mask = lat_series.notna() & lon_series.notna()
+        if not valid_mask.any():
+            energy_distance_status_box.text = (
+                "<em>No valid lat/lon values found to compute energy distance.</em>"
+            )
+            return
+
+        try:
+            import dcor
+        except ImportError:
+            energy_distance_status_box.text = (
+                "<em>dcor is not installed; install it to compute energy distance.</em>"
+            )
+            return
+
+        labels_array = np.array(labels, dtype=str)
+        valid_mask_array = valid_mask.to_numpy()
+        unique_labels = sorted(set(labels_array))
+
+        results: list[tuple[str, float, int, int]] = []
+        skipped: list[str] = []
+        for label in unique_labels:
+            inside_mask = (labels_array == label) & valid_mask_array
+            outside_mask = (labels_array != label) & valid_mask_array
+            inside_points = np.column_stack(
+                (
+                    lat_series[inside_mask].to_numpy(),
+                    lon_series[inside_mask].to_numpy(),
+                )
+            )
+            outside_points = np.column_stack(
+                (
+                    lat_series[outside_mask].to_numpy(),
+                    lon_series[outside_mask].to_numpy(),
+                )
+            )
+            if inside_points.shape[0] < 2 or outside_points.shape[0] < 2:
+                skipped.append(str(label))
+                continue
+            try:
+                distance = float(
+                    dcor.energy_distance(inside_points, outside_points)
+                )
+            except Exception as exc:  # noqa: BLE001
+                energy_distance_status_box.text = (
+                    f"<em>Energy distance failed: {html.escape(str(exc))}</em>"
+                )
+                return
+            results.append(
+                (str(label), distance, inside_points.shape[0], outside_points.shape[0])
+            )
+
+        if not results:
+            energy_distance_status_box.text = (
+                "<em>No clusters had enough points to compute energy distance.</em>"
+            )
+            return
+
+        results.sort(key=lambda item: item[1], reverse=True)
+        missing_count = int(len(labels) - valid_mask.sum())
+        coords_text = f"lat/lon: {html.escape(lat_col)}/{html.escape(lon_col)}"
+        suffix = f"; dropped {missing_count} missing coords" if missing_count else ""
+        rows_html = "".join(
+            "<li>"
+            f"<strong>{html.escape(label)}</strong>: {dist:.4f} "
+            f"(inside {inside_count}, outside {outside_count})"
+            "</li>"
+            for label, dist, inside_count, outside_count in results
+        )
+        skipped_text = (
+            f"<div><em>Skipped clusters (insufficient points): "
+            f"{html.escape(', '.join(skipped))}</em></div>"
+            if skipped
+            else ""
+        )
+        energy_distance_status_box.text = (
+            f"<div><strong>Energy distance by cluster:</strong> ({coords_text}{suffix})</div>"
+            f"<ul>{rows_html}</ul>{skipped_text}"
+        )
+
     def selected_record_indices() -> list[int]:
         """Return unique record indices from the current point selection."""
 
@@ -1646,6 +1809,137 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             message += f" Skipped {skipped} row(s) without clip indices."
         annotation_status_box.text = message
 
+    def save_hdbscan_groups(group_name: str, description_text: str) -> None:
+        """Persist HDBSCAN clusters to disk as group CSVs."""
+
+        if current_species_slug is None:
+            hdbscan_save_status_box.text = (
+                "<em>Load a species before saving HDBSCAN groups.</em>"
+            )
+            return
+        if current_hdbscan_labels is None:
+            hdbscan_save_status_box.text = (
+                "<em>Compute HDBSCAN before saving clusters.</em>"
+            )
+            return
+
+        labels = list(pcp_source.data.get("hdbscan_label", []))
+        xcid_values = list(pcp_source.data.get("xcid", []))
+        clip_values = list(pcp_source.data.get("clip_index", []))
+        if not labels or not xcid_values or not clip_values:
+            hdbscan_save_status_box.text = (
+                "<em>PCP data is missing HDBSCAN labels or xcid/clip_index.</em>"
+            )
+            return
+        if len(labels) != len(xcid_values) or len(labels) != len(clip_values):
+            hdbscan_save_status_box.text = (
+                "<em>HDBSCAN labels do not align with PCP metadata.</em>"
+            )
+            return
+
+        base_stem = sanitize_group_name(Path(str(group_name)).stem)
+        if not base_stem:
+            hdbscan_save_status_box.text = (
+                "<em>Please provide a non-empty HDBSCAN group name.</em>"
+            )
+            return
+
+        output_dir = groups_root / current_species_slug / "hdbscan"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            hdbscan_save_status_box.text = (
+                f"<span style='color:#b00;'>Failed to prepare hdbscan folder: "
+                f"{html.escape(str(exc))}</span>"
+            )
+            return
+
+        unique_labels = sorted(set(labels))
+        noise_label = HDBSCAN_NOISE_LABEL
+        saved_clusters = 0
+        skipped_clusters: list[str] = []
+        skipped_rows = 0
+
+        for label in unique_labels:
+            if label == noise_label:
+                skipped_clusters.append(label)
+                continue
+            label_stem = sanitize_group_name(str(label)) or str(label).strip()
+            if not label_stem:
+                skipped_clusters.append(str(label))
+                continue
+
+            rows: list[dict[str, Any]] = []
+            for idx, current_label in enumerate(labels):
+                if current_label != label:
+                    continue
+                if idx >= len(xcid_values) or idx >= len(clip_values):
+                    skipped_rows += 1
+                    continue
+                xcid_value = xcid_values[idx]
+                if xcid_value is None or pd.isna(xcid_value):
+                    skipped_rows += 1
+                    continue
+                xcid_str = str(xcid_value).strip()
+                if not xcid_str:
+                    skipped_rows += 1
+                    continue
+                clip_idx = _coerce_clip_index(clip_values[idx])
+                if clip_idx is None:
+                    skipped_rows += 1
+                    continue
+                rows.append({"xcid": xcid_str, "clip_index": clip_idx})
+
+            if not rows:
+                skipped_clusters.append(str(label))
+                continue
+
+            csv_path = output_dir / f"{base_stem}_cluster_{label_stem}.csv"
+            txt_path = output_dir / f"{base_stem}_cluster_{label_stem}.txt"
+            counter = 1
+            while csv_path.exists() or txt_path.exists():
+                csv_path = (
+                    output_dir / f"{base_stem}_cluster_{label_stem}_{counter}.csv"
+                )
+                txt_path = (
+                    output_dir / f"{base_stem}_cluster_{label_stem}_{counter}.txt"
+                )
+                counter += 1
+
+            full_description = f"Cluster: {label}\n{description_text}".strip()
+            description_payload = format_pcp_group_description(
+                full_description, last_umap_params, last_hdbscan_params
+            )
+
+            try:
+                pd.DataFrame(rows).to_csv(csv_path, index=False)
+                txt_path.write_text(description_payload, encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001
+                hdbscan_save_status_box.text = (
+                    f"<span style='color:#b00;'>Failed to save cluster {label}: "
+                    f"{html.escape(str(exc))}</span>"
+                )
+                return
+
+            saved_clusters += 1
+
+        if saved_clusters == 0:
+            hdbscan_save_status_box.text = (
+                "<em>No HDBSCAN clusters were saved.</em>"
+            )
+            return
+
+        skipped_msg = ""
+        if skipped_clusters:
+            skipped_msg = (
+                f" Skipped clusters: {html.escape(', '.join(skipped_clusters))}."
+            )
+        row_msg = f" Skipped {skipped_rows} row(s)." if skipped_rows else ""
+        hdbscan_save_status_box.text = (
+            f"Saved {saved_clusters} HDBSCAN cluster group(s) to "
+            f"{html.escape(str(output_dir))}.{skipped_msg}{row_msg}"
+        )
+
     def on_save_request(
         attr: str, old: dict[str, list[str]], new: dict[str, list[str]]
     ) -> None:
@@ -1664,6 +1958,25 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         group_name = name_list[0] if name_list else ""
         description_text = desc_list[0] if desc_list else ""
         save_active_pcp_groups(group_name, description_text)
+
+    def on_hdbscan_save_request(
+        attr: str, old: dict[str, list[str]], new: dict[str, list[str]]
+    ) -> None:
+        """Handle HDBSCAN save requests issued from the JS prompt."""
+
+        nonlocal last_hdbscan_save_nonce
+        nonce_list = new.get("nonce", [])
+        if not nonce_list:
+            return
+        nonce = str(nonce_list[0])
+        if not nonce or nonce == last_hdbscan_save_nonce:
+            return
+        last_hdbscan_save_nonce = nonce
+        name_list = new.get("name", [])
+        desc_list = new.get("description", [])
+        group_name = name_list[0] if name_list else ""
+        description_text = desc_list[0] if desc_list else ""
+        save_hdbscan_groups(group_name, description_text)
 
     create_group_button.on_click(create_group_from_selection)
     clear_groups_button.on_click(clear_active_pcp_groups)
@@ -1691,6 +2004,30 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         )
     )
     save_request_source.on_change("data", on_save_request)
+
+    hdbscan_save_button.js_on_click(
+        CustomJS(
+            args=dict(save_source=hdbscan_save_request_source),
+            code="""
+            const name = window.prompt("Enter a name for these HDBSCAN groups:");
+            if (name === null) {
+                return;
+            }
+            const trimmed = name.trim();
+            const desc = window.prompt("Enter a description for these HDBSCAN groups:");
+            if (desc === null) {
+                return;
+            }
+            save_source.data = {
+                name: [trimmed],
+                description: [desc],
+                nonce: [String(Date.now())],
+            };
+            save_source.change.emit();
+            """,
+        )
+    )
+    hdbscan_save_request_source.on_change("data", on_hdbscan_save_request)
 
     def update_pcp_plot(projection: np.ndarray, metadata_df: pd.DataFrame) -> None:
         """Populate the parallel coordinates plot from UMAP output."""
@@ -2401,6 +2738,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hdbscan_checklist.active = list(range(len(unique_labels)))
         hdbscan_checklist.visible = True
         hdbscan_clusters_label.visible = True
+        energy_distance_button.disabled = False
+        energy_distance_status_box.text = (
+            "<em>Press Energy distance to compute all clusters.</em>"
+        )
+        hdbscan_save_button.disabled = False
+        hdbscan_save_status_box.text = (
+            "<em>Press Save HDBSCAN groups to export clusters.</em>"
+        )
 
         current_data = pcp_source.data
         point_count = len(current_data.get("xs", []))
@@ -2455,6 +2800,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
     calculate_button.on_click(on_calculate_click)
     hdbscan_compute_button.on_click(compute_hdbscan_clusters)
+    energy_distance_button.on_click(compute_energy_distance)
 
     playlist_callback = CustomJS(
         args=dict(
