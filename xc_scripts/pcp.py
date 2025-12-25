@@ -13,6 +13,7 @@ import argparse
 import base64
 import errno
 import html
+import io
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -75,6 +76,7 @@ DEFAULT_UMAP_NEIGHBORS = 15
 DEFAULT_UMAP_MIN_DIST = 0.0
 DEFAULT_UMAP_METRIC = "euclidean"
 DEFAULT_UMAP_SEED = 42
+DEFAULT_PCA_COMPONENTS = 6
 PCP_BASE_COLOR = "#4477AA"
 PCP_OTHER_COLOR = "#b0b0b0"
 GRADIENT_LOW = "#2b83ba"
@@ -521,6 +523,7 @@ def format_pcp_group_description(
     description: str,
     umap_params: dict[str, Any] | None,
     hdbscan_params: dict[str, Any] | None,
+    pca_params: dict[str, Any] | None,
 ) -> str:
     """Create the .txt contents for a saved PCP group."""
 
@@ -535,6 +538,12 @@ def format_pcp_group_description(
         lines.append(f"- min_dist: {umap_params.get('min_dist', 'n/a')}")
         lines.append(f"- metric: {umap_params.get('metric', 'n/a')}")
         lines.append(f"- seed: {umap_params.get('seed', 'n/a')}")
+    else:
+        lines.append("- not run yet")
+    lines.append("")
+    lines.append("PCA parameters:")
+    if pca_params:
+        lines.append(f"- n_components: {pca_params.get('n_components', 'n/a')}")
     else:
         lines.append("- not run yet")
     lines.append("")
@@ -606,12 +615,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     current_umap_metadata: pd.DataFrame | None = None
     current_hdbscan_labels: list[str] | None = None
     current_hdbscan_color_map: dict[str, str] = {}
+    current_hdbscan_clusterer: hdbscan.HDBSCAN | None = None
     current_point_base: dict[str, list[Any]] | None = None
     current_point_dims = 0
     active_pcp_groups: list[dict[str, Any]] = []
     next_pcp_group_id = 1
     last_umap_params: dict[str, Any] | None = None
     last_hdbscan_params: dict[str, Any] | None = None
+    last_pca_params: dict[str, Any] | None = None
     last_save_nonce = ""
     last_hdbscan_save_nonce = ""
 
@@ -723,6 +734,21 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         styles={"color": "#2d2616", "margin-top": "6px"},
         width=240,
     )
+    pca_components_spinner = Spinner(
+        title="Number of components",
+        low=2,
+        high=310,
+        step=1,
+        value=DEFAULT_PCA_COMPONENTS,
+        width=140,
+    )
+    pca_compute_button = Button(label="Compute PCA", button_type="primary", width=140)
+    pca_status_box = Div(
+        text="<em>PCA will run on selected groups or all recordings.</em>",
+        render_as_text=False,
+        styles={"color": "#2d2616", "margin-top": "6px"},
+        width=240,
+    )
 
     umap_parameters_panel = column(
         Div(
@@ -742,6 +768,29 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         calculate_button,
         missing_metadata_warning,
         umap_status_box,
+        width=260,
+        sizing_mode="fixed",
+        css_classes=["control-card"],
+        styles={
+            "background-color": CARD_BACKGROUND_COLOR,
+            "border-radius": "12px",
+            "padding": "12px 14px",
+            "box-shadow": "0 3px 10px rgba(0, 0, 0, 0.08)",
+        },
+    )
+    pca_parameters_panel = column(
+        Div(
+            text="PCA parameters",
+            styles={
+                "font-size": "15px",
+                "font-weight": "600",
+                "margin-bottom": "6px",
+                "color": "#2d2616",
+            },
+        ),
+        pca_components_spinner,
+        pca_compute_button,
+        pca_status_box,
         width=260,
         sizing_mode="fixed",
         css_classes=["control-card"],
@@ -777,7 +826,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         disabled=True,
     )
     hdbscan_status_box = Div(
-        text="<em>Run UMAP first, then compute clusters.</em>",
+        text="<em>Run UMAP or PCA first, then compute clusters.</em>",
         render_as_text=False,
         styles={"color": "#2d2616", "margin-top": "6px"},
         width=240,
@@ -861,7 +910,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     descriptions_box = Div(
         text="<em>Load a species to view descriptions.</em>",
         render_as_text=False,
-        styles={"color": "#3a3426"},
+        styles={
+            "color": "#3a3426",
+            "max-height": "360px",
+            "overflow-y": "auto",
+            "padding-right": "4px",
+        },
         width=520,
     )
     embeddings_counts_box = Div(
@@ -976,6 +1030,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "xcid": [],
             "clip_index": [],
             "date": [],
+            "recordist": [],
             "audio_url": [],
             "spectrogram_url": [],
             "spectrogram_data_uri": [],
@@ -1035,6 +1090,26 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     pcp_plot.toolbar.autohide = True
     pcp_plot.xaxis.ticker = []
 
+    condensed_tree_title = Div(
+        text="HDBSCAN condensed tree",
+        styles={
+            "font-size": "15px",
+            "font-weight": "600",
+            "margin-bottom": "6px",
+            "color": "#2d2616",
+        },
+    )
+    condensed_tree_panel = Div(
+        text="<em>Compute HDBSCAN to see the condensed tree.</em>",
+        render_as_text=False,
+        width=1200,
+        styles={
+            "border": "1px solid #d6d0c2",
+            "border-radius": "8px",
+            "padding": "8px",
+            "background-color": "#fffaf2",
+        },
+    )
     pcp_panel = column(
         Div(
             text="Parallel coordinates (UMAP dimensions)",
@@ -1047,6 +1122,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         ),
         pcp_status_box,
         pcp_plot,
+        condensed_tree_title,
+        condensed_tree_panel,
         sizing_mode="stretch_width",
         width=1200,
         css_classes=["control-card"],
@@ -1250,8 +1327,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         """Reset HDBSCAN results and related UI state."""
 
         nonlocal current_hdbscan_labels, current_hdbscan_color_map
+        nonlocal current_hdbscan_clusterer
         current_hdbscan_labels = None
         current_hdbscan_color_map = {}
+        current_hdbscan_clusterer = None
         energy_distance_button.disabled = True
         energy_distance_status_box.text = (
             "<em>Compute HDBSCAN to enable energy distance.</em>"
@@ -1260,11 +1339,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hdbscan_save_status_box.text = (
             "<em>Compute HDBSCAN to enable saving clusters.</em>"
         )
+        update_condensed_tree("<em>Compute HDBSCAN to see the condensed tree.</em>")
         hdbscan_checklist.labels = []
         hdbscan_checklist.active = []
         hdbscan_checklist.visible = False
         hdbscan_clusters_label.visible = False
-        hdbscan_status_box.text = "<em>Run UMAP first, then compute clusters.</em>"
+        hdbscan_status_box.text = "<em>Run UMAP or PCA first, then compute clusters.</em>"
         if pcp_source.data.get("xs"):
             current_data = pcp_source.data
             point_count = len(current_data.get("key", []))
@@ -1284,6 +1364,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "xcid": current_data.get("xcid", []),
                 "clip_index": current_data.get("clip_index", []),
                 "date": current_data.get("date", []),
+                "recordist": current_data.get("recordist", []),
                 "audio_url": current_data.get("audio_url", []),
                 "spectrogram_url": current_data.get("spectrogram_url", []),
                 "spectrogram_data_uri": current_data.get("spectrogram_data_uri", []),
@@ -1360,6 +1441,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "xcid": current_data.get("xcid", []),
                 "clip_index": current_data.get("clip_index", []),
                 "date": current_data.get("date", []),
+                "recordist": current_data.get("recordist", []),
                 "audio_url": current_data.get("audio_url", []),
                 "spectrogram_url": current_data.get("spectrogram_url", []),
                 "spectrogram_data_uri": current_data.get("spectrogram_data_uri", []),
@@ -1492,6 +1574,140 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         colors, playlist_active = _apply_group_colors()
         _update_source(colors, base_alpha, playlist_active)
 
+    def build_hdbscan_selection_palette() -> tuple[list[str], list[str]]:
+        """Return palette and label order for condensed tree selection colors."""
+
+        if not current_hdbscan_labels:
+            return [], []
+        unique_labels = {label for label in current_hdbscan_labels}
+        unique_labels.discard(HDBSCAN_NOISE_LABEL)
+        if not unique_labels:
+            return [], []
+
+        def label_key(label: str) -> tuple[int, int | str]:
+            try:
+                return (0, int(label))
+            except ValueError:
+                return (1, label)
+
+        ordered_labels = sorted(unique_labels, key=label_key)
+        palette = [
+            current_hdbscan_color_map.get(label, PCP_OTHER_COLOR)
+            for label in ordered_labels
+        ]
+        return palette, ordered_labels
+
+    def render_condensed_tree_image(
+        clusterer: hdbscan.HDBSCAN, selection_palette: list[str]
+    ) -> tuple[str, bool]:
+        """Render the HDBSCAN condensed tree to a PNG data URI."""
+
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        plot_kwargs: dict[str, Any] = {"select_clusters": True}
+        palette_applied = False
+        if selection_palette:
+            plot_kwargs["selection_palette"] = selection_palette
+
+        def _plot_with_ax() -> plt.Figure:
+            fig, ax = plt.subplots(figsize=(9.5, 3.4), dpi=120)
+            try:
+                clusterer.condensed_tree_.plot(ax=ax, **plot_kwargs)
+            except Exception:
+                plt.close(fig)
+                raise
+            return fig
+
+        def _plot_without_ax() -> plt.Figure:
+            fig = plt.figure(figsize=(9.5, 3.4), dpi=120)
+            try:
+                clusterer.condensed_tree_.plot(**plot_kwargs)
+            except Exception:
+                plt.close(fig)
+                raise
+            return plt.gcf()
+
+        try:
+            fig_to_save = _plot_with_ax()
+            palette_applied = "selection_palette" in plot_kwargs
+        except TypeError:
+            try:
+                fig_to_save = _plot_without_ax()
+                palette_applied = "selection_palette" in plot_kwargs
+            except TypeError:
+                plot_kwargs.pop("selection_palette", None)
+                fig_to_save = _plot_without_ax()
+                palette_applied = False
+
+        fig_to_save.tight_layout()
+        buffer = io.BytesIO()
+        fig_to_save.savefig(buffer, format="png", bbox_inches="tight")
+        plt.close(fig_to_save)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}", palette_applied
+
+    def update_condensed_tree(message: str | None = None) -> None:
+        """Update the condensed tree panel with the latest HDBSCAN tree."""
+
+        if message is not None:
+            condensed_tree_panel.text = message
+            return
+        if current_hdbscan_clusterer is None:
+            condensed_tree_panel.text = (
+                "<em>Compute HDBSCAN to see the condensed tree.</em>"
+            )
+            return
+        palette, ordered_labels = build_hdbscan_selection_palette()
+        try:
+            image_uri, palette_applied = render_condensed_tree_image(
+                current_hdbscan_clusterer, palette
+            )
+        except ImportError:
+            condensed_tree_panel.text = (
+                "<em>matplotlib is not installed; install it to render the tree.</em>"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            condensed_tree_panel.text = (
+                f"<em>Failed to render condensed tree: {html.escape(str(exc))}</em>"
+            )
+            return
+        legend_html = ""
+        if ordered_labels:
+            entries = []
+            for label in ordered_labels:
+                color = current_hdbscan_color_map.get(label, PCP_OTHER_COLOR)
+                entries.append(
+                    "<span style='display:inline-flex;align-items:center;"
+                    "margin-right:10px;margin-top:4px;'>"
+                    f"<span style='display:inline-block;width:12px;height:12px;"
+                    f"background:{color};border:1px solid #d2d2d2;"
+                    "margin-right:6px;border-radius:2px;'></span>"
+                    f"{html.escape(str(label))}</span>"
+                )
+            if palette_applied:
+                legend_html = (
+                    "<div style='margin-bottom:6px;'>"
+                    "<strong>Cluster colors:</strong> "
+                    + "".join(entries)
+                    + "</div>"
+                )
+            else:
+                legend_html = (
+                    "<div style='margin-bottom:6px;'>"
+                    "<em>Cluster colors could not be applied in this HDBSCAN version.</em>"
+                    "</div>"
+                )
+        condensed_tree_panel.text = (
+            "<div><em>Selected clusters are highlighted.</em></div>"
+            f"{legend_html}"
+            f"<img src=\"{image_uri}\" alt=\"HDBSCAN condensed tree\" "
+            "style=\"max-width:100%; height:auto;\">"
+        )
+
     def find_coordinate_columns(metadata_df: pd.DataFrame) -> tuple[str, str] | None:
         """Return latitude/longitude column names when present (case-insensitive)."""
 
@@ -1541,6 +1757,24 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             )
             return
 
+        recordist_col = None
+        recordist_candidates = {"recordist", "recorder", "recordist_name", "rec"}
+        for col in current_umap_metadata.columns:
+            if str(col).lower() in recordist_candidates:
+                recordist_col = col
+                break
+        if recordist_col is not None:
+            recordist_series = (
+                current_umap_metadata[recordist_col]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+            recordist_available = True
+        else:
+            recordist_series = pd.Series([""] * len(current_umap_metadata))
+            recordist_available = False
+
         try:
             import dcor
         except ImportError:
@@ -1553,7 +1787,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         valid_mask_array = valid_mask.to_numpy()
         unique_labels = sorted(set(labels_array))
 
-        results: list[tuple[str, float, int, int]] = []
+        results: list[tuple[str, float, int, int, int, int]] = []
         skipped: list[str] = []
         for label in unique_labels:
             inside_mask = (labels_array == label) & valid_mask_array
@@ -1582,8 +1816,32 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                     f"<em>Energy distance failed: {html.escape(str(exc))}</em>"
                 )
                 return
+            inside_recordists = 0
+            outside_recordists = 0
+            if recordist_available:
+                inside_recordists = len(
+                    {
+                        value
+                        for value in recordist_series[inside_mask].to_numpy()
+                        if value
+                    }
+                )
+                outside_recordists = len(
+                    {
+                        value
+                        for value in recordist_series[outside_mask].to_numpy()
+                        if value
+                    }
+                )
             results.append(
-                (str(label), distance, inside_points.shape[0], outside_points.shape[0])
+                (
+                    str(label),
+                    distance,
+                    inside_points.shape[0],
+                    outside_points.shape[0],
+                    inside_recordists,
+                    outside_recordists,
+                )
             )
 
         if not results:
@@ -1599,10 +1857,17 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         rows_html = "".join(
             "<li>"
             f"<strong>{html.escape(label)}</strong>: {dist:.4f} "
-            f"(inside {inside_count}, outside {outside_count})"
+            f"(inside {inside_count}, outside {outside_count}; "
+            f"recordists {inside_rec if recordist_available else 'n/a'}/"
+            f"{outside_rec if recordist_available else 'n/a'})"
             "</li>"
-            for label, dist, inside_count, outside_count in results
+            for label, dist, inside_count, outside_count, inside_rec, outside_rec in results
         )
+        recordist_note = ""
+        if not recordist_available:
+            recordist_note = (
+                "<div><em>Recordist column not found; recordist counts are n/a.</em></div>"
+            )
         skipped_text = (
             f"<div><em>Skipped clusters (insufficient points): "
             f"{html.escape(', '.join(skipped))}</em></div>"
@@ -1611,7 +1876,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         )
         energy_distance_status_box.text = (
             f"<div><strong>Energy distance by cluster:</strong> ({coords_text}{suffix})</div>"
-            f"<ul>{rows_html}</ul>{skipped_text}"
+            f"<ul>{rows_html}</ul>{recordist_note}{skipped_text}"
         )
 
     def selected_record_indices() -> list[int]:
@@ -1783,7 +2048,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             counter += 1
 
         description_payload = format_pcp_group_description(
-            description_text, last_umap_params, last_hdbscan_params
+            description_text, last_umap_params, last_hdbscan_params, last_pca_params
         )
 
         try:
@@ -1855,15 +2120,11 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             return
 
         unique_labels = sorted(set(labels))
-        noise_label = HDBSCAN_NOISE_LABEL
         saved_clusters = 0
         skipped_clusters: list[str] = []
         skipped_rows = 0
 
         for label in unique_labels:
-            if label == noise_label:
-                skipped_clusters.append(label)
-                continue
             label_stem = sanitize_group_name(str(label)) or str(label).strip()
             if not label_stem:
                 skipped_clusters.append(str(label))
@@ -1908,7 +2169,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
             full_description = f"Cluster: {label}\n{description_text}".strip()
             description_payload = format_pcp_group_description(
-                full_description, last_umap_params, last_hdbscan_params
+                full_description,
+                last_umap_params,
+                last_hdbscan_params,
+                last_pca_params,
             )
 
             try:
@@ -2046,6 +2310,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "xcid": [],
                 "clip_index": [],
                 "date": [],
+                "recordist": [],
                 "audio_url": [],
                 "spectrogram_url": [],
                 "spectrogram_data_uri": [],
@@ -2105,6 +2370,19 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         else:
             date_values = [""] * record_count
 
+        recordist_col = None
+        recordist_candidates = {"recordist", "recorder", "recordist_name", "rec"}
+        for col in metadata_df.columns:
+            if str(col).lower() in recordist_candidates:
+                recordist_col = col
+                break
+        if recordist_col is not None:
+            recordist_values = (
+                metadata_df[recordist_col].fillna("").astype(str).tolist()
+            )
+        else:
+            recordist_values = [""] * record_count
+
         if "audio_url" in metadata_df.columns:
             audio_values = metadata_df["audio_url"].fillna("").tolist()
         else:
@@ -2131,6 +2409,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "xcid": xcid_values,
             "clip_index": clip_index_values,
             "date": date_values,
+            "recordist": recordist_values,
             "audio_url": audio_values,
             "spectrogram_url": spectrogram_values,
             "spectrogram_data_uri": spectrogram_inline,
@@ -2313,6 +2592,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "xcid": [],
             "clip_index": [],
             "date": [],
+            "recordist": [],
             "audio_url": [],
             "spectrogram_url": [],
             "spectrogram_data_uri": [],
@@ -2334,6 +2614,13 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         )
         color_mode_select.value = "Groups"
         clear_hdbscan_results()
+        umap_status_box.text = (
+            "<em>UMAP will run on selected groups or all recordings.</em>"
+        )
+        pca_status_box.text = (
+            "<em>PCA will run on selected groups or all recordings.</em>"
+        )
+        missing_metadata_warning.visible = False
 
     load_button.on_click(load_species_groups)
 
@@ -2667,12 +2954,214 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "<em>HDBSCAN ready: adjust parameters and press Compute.</em>"
         )
 
+    def compute_pca_projection() -> None:
+        """Compute PCA projection for the selected embeddings."""
+
+        nonlocal current_umap_projection, current_umap_metadata, last_pca_params
+        clear_hdbscan_results()
+        if current_species_slug is None or current_embeddings_path is None:
+            pca_status_box.text = "<em>Please load a species first.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        selected_entries = collect_selected_entries()
+        if not selected_entries and not all_toggle.active:
+            pca_status_box.text = "<em>Select groups or enable All recordings.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        if not current_embeddings_path.exists():
+            pca_status_box.text = (
+                f"<em>Embeddings file not found at "
+                f"{html.escape(str(current_embeddings_path))}.</em>"
+            )
+            missing_metadata_warning.visible = False
+            return
+
+        metadata_path = root_path / "embeddings" / current_species_slug / "metadata.csv"
+        if not metadata_path.exists():
+            pca_status_box.text = "<em>Metadata file not found; cannot run PCA.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        try:
+            embeddings_df = pd.read_csv(current_embeddings_path)
+        except Exception as exc:  # noqa: BLE001
+            pca_status_box.text = (
+                f"<em>Failed to read embeddings: {html.escape(str(exc))}</em>"
+            )
+            missing_metadata_warning.visible = False
+            return
+
+        try:
+            metadata_df = pd.read_csv(metadata_path)
+        except Exception as exc:  # noqa: BLE001
+            pca_status_box.text = (
+                f"<em>Failed to read metadata: {html.escape(str(exc))}</em>"
+            )
+            missing_metadata_warning.visible = False
+            return
+
+        embeddings_with_keys = append_key_column(embeddings_df)
+        metadata_with_keys = append_key_column(metadata_df)
+        embedding_keys = set(embeddings_with_keys["__key__"])
+        metadata_keys = set(metadata_with_keys["__key__"])
+
+        if not embedding_keys:
+            pca_status_box.text = "<em>No usable keys found in embeddings.csv.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        if not metadata_keys:
+            pca_status_box.text = "<em>No usable metadata entries found.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        selected_keys: set[tuple[str, int]] = set()
+        if all_toggle.active:
+            selected_keys = set(embedding_keys)
+        else:
+            for _category_label, entry in selected_entries:
+                csv_path = Path(entry.get("csv_path") or "")
+                if not csv_path.exists():
+                    continue
+                try:
+                    group_df = pd.read_csv(csv_path)
+                except Exception:
+                    continue
+                group_keys_df = append_key_column(group_df)
+                selected_keys.update(
+                    key for key in group_keys_df["__key__"] if key is not None
+                )
+
+        if not selected_keys:
+            pca_status_box.text = "<em>No recordings matched the selected groups.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        selected_embedding_keys = selected_keys & embedding_keys
+        missing_meta_count = len(selected_embedding_keys - metadata_keys)
+        usable_keys = selected_embedding_keys & metadata_keys
+
+        if not usable_keys:
+            pca_status_box.text = (
+                "<em>No overlap between selected embeddings and available metadata.</em>"
+            )
+            missing_metadata_warning.visible = missing_meta_count > 0
+            if missing_meta_count:
+                missing_metadata_warning.text = (
+                    f"<strong>Warning:</strong> Omitted {missing_meta_count} "
+                    "embeddings due to missing metadata."
+                )
+            return
+
+        selected_embeddings = (
+            embeddings_with_keys[embeddings_with_keys["__key__"].isin(usable_keys)]
+            .drop_duplicates(subset="__key__")
+            .reset_index(drop=True)
+        )
+        metadata_lookup = (
+            metadata_with_keys.drop_duplicates(subset="__key__", keep="first")
+            .set_index("__key__", drop=False)
+        )
+        try:
+            selected_metadata = metadata_lookup.loc[
+                selected_embeddings["__key__"]
+            ].reset_index(drop=True)
+        except KeyError:
+            pca_status_box.text = "<em>Failed to align metadata with embeddings.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        try:
+            embedding_matrix, valid_indices = embedding_matrix_from_dataframe(
+                selected_embeddings
+            )
+        except ValueError as exc:
+            pca_status_box.text = f"<em>{html.escape(str(exc))}</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        if len(valid_indices) != len(selected_embeddings):
+            selected_embeddings = (
+                selected_embeddings.iloc[valid_indices].reset_index(drop=True)
+            )
+            selected_metadata = (
+                selected_metadata.iloc[valid_indices].reset_index(drop=True)
+            )
+
+        selected_metadata = add_media_columns(
+            selected_metadata,
+            species_slug=current_species_slug,
+            audio_base_url=AUDIO_BASE_URL,
+            spectrogram_base_url=SPECTROGRAM_BASE_URL,
+            spectrogram_dir=root_path / "spectrograms" / current_species_slug,
+            spectrogram_image_format=SPECTROGRAM_IMAGE_FORMAT,
+            inline_spectrograms=INLINE_SPECTROGRAMS,
+        )
+
+        if embedding_matrix.size == 0:
+            pca_status_box.text = "<em>No embeddings available after filtering.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        try:
+            n_components = int(pca_components_spinner.value or DEFAULT_PCA_COMPONENTS)
+        except (TypeError, ValueError):
+            pca_status_box.text = "<em>Invalid PCA parameter values.</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        max_components = min(embedding_matrix.shape[0], embedding_matrix.shape[1])
+        if n_components < 2 or n_components > max_components:
+            pca_status_box.text = (
+                f"<em>PCA components must be between 2 and {max_components}.</em>"
+            )
+            missing_metadata_warning.visible = False
+            return
+
+        last_pca_params = {"n_components": n_components}
+
+        try:
+            centered = embedding_matrix - embedding_matrix.mean(axis=0)
+            _, _, vt = np.linalg.svd(centered, full_matrices=False)
+            projection = centered @ vt[:n_components].T
+        except Exception as exc:  # noqa: BLE001
+            pca_status_box.text = f"<em>PCA failed: {html.escape(str(exc))}</em>"
+            missing_metadata_warning.visible = False
+            return
+
+        missing_metadata_warning.visible = missing_meta_count > 0
+        if missing_meta_count:
+            missing_metadata_warning.text = (
+                f"<strong>Warning:</strong> Omitted {missing_meta_count} "
+                "embeddings due to missing metadata."
+            )
+        else:
+            missing_metadata_warning.text = ""
+
+        current_umap_projection = projection
+        current_umap_metadata = selected_metadata
+        update_pcp_plot(projection, selected_metadata)
+        apply_color_selection()
+        playlist_panel.text = (
+            "<em>Click a point on a dimension axis to list nearby recordings.</em>"
+        )
+        pca_status_box.text = (
+            f"PCA completed for {projection.shape[0]} points "
+            f"({projection.shape[1]} components)."
+        )
+        hdbscan_status_box.text = (
+            "<em>HDBSCAN ready: adjust parameters and press Compute.</em>"
+        )
+
     def compute_hdbscan_clusters() -> None:
         """Compute HDBSCAN labels for the current UMAP projection."""
 
         nonlocal current_hdbscan_labels, current_hdbscan_color_map, last_hdbscan_params
+        nonlocal current_hdbscan_clusterer
         if current_umap_projection is None or current_umap_metadata is None:
-            hdbscan_status_box.text = "<em>Run UMAP before computing HDBSCAN.</em>"
+            hdbscan_status_box.text = "<em>Run UMAP or PCA before computing HDBSCAN.</em>"
             return
         if current_umap_projection.size == 0:
             hdbscan_status_box.text = "<em>No UMAP points available for clustering.</em>"
@@ -2695,6 +3184,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "min_samples": min_samples,
         }
 
+        current_hdbscan_clusterer = None
+        update_condensed_tree("<em>Computing HDBSCAN condensed tree...</em>")
         hdbscan_compute_button.label = "Computing..."
         hdbscan_compute_button.disabled = True
         try:
@@ -2721,6 +3212,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             for label in labels_array
         ]
         current_hdbscan_labels = labels
+        current_hdbscan_clusterer = clusterer
         unique_labels = sorted(
             set(labels), key=lambda lbl: (lbl != HDBSCAN_NOISE_LABEL, lbl)
         )
@@ -2746,6 +3238,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hdbscan_save_status_box.text = (
             "<em>Press Save HDBSCAN groups to export clusters.</em>"
         )
+        update_condensed_tree()
 
         current_data = pcp_source.data
         point_count = len(current_data.get("xs", []))
@@ -2768,6 +3261,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "xcid": current_data.get("xcid", []),
             "clip_index": current_data.get("clip_index", []),
             "date": current_data.get("date", []),
+            "recordist": current_data.get("recordist", []),
             "audio_url": current_data.get("audio_url", []),
             "spectrogram_url": current_data.get("spectrogram_url", []),
             "spectrogram_data_uri": current_data.get("spectrogram_data_uri", []),
@@ -2798,7 +3292,19 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             calculate_button.label = "Calculate"
             calculate_button.disabled = False
 
+    def on_pca_click() -> None:
+        pca_compute_button.label = "Computing..."
+        pca_compute_button.disabled = True
+        pca_status_box.text = "<em>Calculating PCA...</em>"
+        missing_metadata_warning.visible = False
+        try:
+            compute_pca_projection()
+        finally:
+            pca_compute_button.label = "Compute PCA"
+            pca_compute_button.disabled = False
+
     calculate_button.on_click(on_calculate_click)
+    pca_compute_button.on_click(on_pca_click)
     hdbscan_compute_button.on_click(compute_hdbscan_clusters)
     energy_distance_button.on_click(compute_energy_distance)
 
@@ -2833,6 +3339,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         const keys = r['key'] || [];
         const colors = r['color'] || [];
         const dates = r['date'] || [];
+        const recordists = r['recordist'] || [];
         const xcids = r['xcid'] || [];
         const audioUrls = r['audio_url'] || [];
         const spectroUrls = r['spectrogram_url'] || [];
@@ -2858,6 +3365,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         }
 
         items.sort((a, b) => a.dist - b.dist);
+        const totalCount = items.length;
+        const maxItems = 1000;
+        const itemsToRender = totalCount > maxItems ? items.slice(0, maxItems) : items;
 
         if (!items.length) {
             pane.text = `<b>Dim ${dim + 1}</b><br><em>No recordings matched the active groups.</em>`;
@@ -2920,14 +3430,20 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
         const dimLabel = dim + 1;
         const headerValue = formatNumber(y0);
-        let html = `<div class="playlist-header"><b>Dim ${dimLabel}</b> (value ${headerValue}) - ${items.length} recordings</div>`;
+        const displayCount = itemsToRender.length;
+        const countSuffix = totalCount > maxItems ? ` (showing ${displayCount} of ${totalCount})` : '';
+        let html = `<div class="playlist-header"><b>Dim ${dimLabel}</b> (value ${headerValue}) - ${displayCount} recordings${countSuffix}</div>`;
+        if (totalCount > maxItems) {
+            html += '<div class="playlist-note">Showing the first 1000 closest recordings to avoid browser overload.</div>';
+        }
         html += '<div class="playlist-scroll">';
 
-        for (const item of items) {
+        for (const item of itemsToRender) {
             const j = item.index;
             const color = colors[j] || '#b0b0b0';
             const background = tintedBackground(color);
             const date = escapeHtml(dates[j] || '');
+            const recordist = escapeHtml(recordists[j] || '');
             const xcid = escapeHtml(xcids[j] || '');
             const keyFallback = escapeHtml(keys[j] || '');
             const displayId = xcid || keyFallback || `record ${j + 1}`;
@@ -2958,6 +3474,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                         <div class="playlist-meta">
                             <div class="playlist-id"><b>${displayId}</b></div>
                             <div class="playlist-date">${date || 'Unknown date'}</div>
+                            <div class="playlist-recordist">${recordist ? `Recordist: ${recordist}` : 'Recordist: Unknown'}</div>
                             <div class="playlist-value">Dim ${dimLabel}: ${valueText} (delta ${distText})</div>
                             ${badgeHtml}
                         </div>
@@ -3166,6 +3683,15 @@ html, body {{
     color: #5a543a;
     font-size: 10px;
 }}
+.playlist-recordist {{
+    color: #5a543a;
+    font-size: 10px;
+}}
+.playlist-note {{
+    color: #5a543a;
+    font-size: 11px;
+    margin-bottom: 6px;
+}}
 .playlist-value {{
     color: #2d2616;
     font-size: 10px;
@@ -3206,6 +3732,7 @@ html, body {{
 
     second_row = row(
         umap_parameters_panel,
+        pca_parameters_panel,
         hdbscan_panel,
         annotation_panel,
         counts_panel,
