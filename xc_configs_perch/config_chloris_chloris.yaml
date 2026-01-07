@@ -1,0 +1,67 @@
+# Configuration for bird species data pipeline
+
+species:
+  scientific_name: "Chloris chloris"
+  common_name: "European Greenfinch"
+  slug: "chloris_chloris"  # Used for folder names
+
+paths:
+  root: "/Volumes/Z Slim/zslim_birdcluster"
+  detections_root: "/Volumes/Z Slim/zslim_birdcluster/xc_detections"  # BirdNET detection tables per species (xc_detections/<slug>)
+  vocal_type_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/chloris_chloris/vocal_types"  # Saved vocal-type selections for this species
+  dialect_groups: "/Volumes/Z Slim/zslim_birdcluster/xc_groups/chloris_chloris/dialects"        # Saved dialect selections for this species
+  
+xeno_canto:
+  max_recordings: 10000
+  include_background: true  # Include recordings where species is in background
+  extra_query: "len:3-200"  # Additional XC filters (recording length 3-200 seconds)
+  bounding_box:
+    lat_min: 15.0    # Western Palearctic south edge (approx North Africa)
+    lon_min: -35.0   # West edge (Atlantic/Azores)
+    lat_max: 82.0    # North edge (Arctic)
+    lon_max: 90.0    # East edge (Ural/West Siberia)
+  timeout: 15
+  pause: 0.01  # Seconds between API calls (be polite!)
+
+processing:
+  max_clips_per_recording: 5  # Max clips to extract per recording
+  clip_duration_sec: 5.0
+  min_confidence: 0.20
+  merge_within_sec: 1.0  # Merge detections within this time window
+  delete_originals: true  # Delete original files after clipping
+
+birdnet:
+  version: "2.4"
+  threads: 5        # Good for M1 Max (10 cores total, leave some for system)
+  batch_size: 32    # Good for 32GB RAM
+  overlap_sec: 2.0  # Overlap between analysis windows; 2.0 on 3s windows = ~1s hop
+  # Note: Can increase threads to 10-12 if you want max speed
+  # But 8 keeps system responsive for other tasks
+
+analysis:
+  # UMAP parameters
+  umap_n_neighbors: 20      # Number of neighbors (5-50, lower=local, higher=global structure)
+  umap_min_dist: 0.03        # Minimum distance between points (0.0-1.0, lower=tighter clusters)
+  umap_n_components: 2      # Number of dimensions for output (2 for 2D visualization)
+  
+  # KMeans clustering parameters  
+  kmeans_clusters: 4        # Number of clusters to create
+  kmeans_n_init: 10         # Number of times KMeans runs with different seeds
+  
+  # Visualization parameters
+  point_size: 7            # Size of points in scatter plots
+  point_alpha: 0.3          # Transparency of points (0.0-1.0)
+
+audio:
+  auto_serve: true                   # Start lightweight HTTP server for clips
+  host: "127.0.0.1"                  # Bind address for audio server
+  port: 8765                         # Port for local audio server
+  base_url: null                     # Override to use an existing server instead
+
+spectrograms:
+  auto_serve: true                   # Start a lightweight HTTP server from the app
+  host: "127.0.0.1"                  # Bind address for serving spectrogram PNGs
+  port: 8766                         # Port for spectrogram server
+  base_url: null                     # Override to use an existing server instead
+  image_format: "png"                # Spectrogram file extension
+  inline: false                      # Use HTTP delivery rather than embedding base64
