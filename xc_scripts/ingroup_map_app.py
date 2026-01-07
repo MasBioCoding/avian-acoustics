@@ -12,6 +12,10 @@ Optional overrides:
     --spectrogram-dir /path/to/spectrograms/<species_slug>
     --top-n 50
     --sort desc
+
+Config tweaks (config yaml):
+    map:
+        auto_zoom: false  # Keep map extent fixed when switching ingroups
     
     For me:
     
@@ -78,6 +82,9 @@ def load_config(config_path: Optional[Path] = None) -> dict[str, Any]:
             "base_url": None,
             "image_format": "png",
             "inline": False,
+        },
+        "map": {
+            "auto_zoom": False,
         },
     }
 
@@ -534,6 +541,8 @@ spectro_cfg = config.get("spectrograms", {}) or {}
 SPECTROGRAM_IMAGE_FORMAT = str(spectro_cfg.get("image_format", "png")).lstrip(".")
 INLINE_SPECTROGRAMS = bool(spectro_cfg.get("inline", False))
 SPECTROGRAM_BASE_URL = spectro_cfg.get("base_url")
+map_cfg = config.get("map", {}) or {}
+AUTO_ZOOM = bool(map_cfg.get("auto_zoom", False))
 
 if not SPECTROGRAM_BASE_URL and bool(spectro_cfg.get("auto_serve", True)):
     generated = start_static_file_server(
@@ -732,7 +741,8 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
     status_div.text = (
         f"<b>Ingroup {html.escape(source_id)}</b>: {len(entries)} entries"
     )
-    update_map_range(map_plot, x_vals, y_vals)
+    if AUTO_ZOOM:
+        update_map_range(map_plot, x_vals, y_vals)
 
 
 def on_table_selection(attr: str, old: list[int], new: list[int]) -> None:
