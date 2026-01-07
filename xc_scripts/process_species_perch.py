@@ -11,6 +11,8 @@ cd /path/to/birdnet_data_pipeline
 for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 
 Usage:
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_chloris_chloris.yaml --use-existing-detections --skip-embeddings
+
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_ignicapilla.yaml
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_regulus.yaml
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_chloris_chloris.yaml
