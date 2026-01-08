@@ -22,8 +22,8 @@ Config tweaks (config yaml):
     bokeh serve xc_scripts/ingroup_map_app.py --show --args \
     --config xc_configs_perch/config_chloris_chloris.yaml \
     --ingroup-csv "/Users/masjansma/Desktop/temp_edvecs/ingroup_energy_with_meta.csv" \
-    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv"
-    
+    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
+    --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/chloris_chloris"
     
 
 """
@@ -50,6 +50,7 @@ from bokeh.models import (
     DataTable,
     Div,
     HoverTool,
+    HTMLTemplateFormatter,
     NumberFormatter,
     Select,
     Spinner,
@@ -381,8 +382,9 @@ def build_metadata_html(
     image_format: str,
     base_url: Optional[str],
     inline: bool,
+    spectrogram_urls: Optional[list[str]] = None,
 ) -> str:
-    """Build HTML for the metadata + spectrogram list."""
+    """Build HTML for the metadata list, reusing spectrogram URLs if provided."""
     if not entries:
         return "<i>No ingroup entries available.</i>"
 
@@ -406,13 +408,19 @@ def build_metadata_html(
         if clip_index:
             meta_bits.append(f"clip: {clip_index}")
 
-        url, exists = build_spectrogram_url(
-            filename=entry.get("filename", "") or "",
-            spectrogram_dir=spectrogram_dir,
-            image_format=image_format,
-            base_url=base_url,
-            inline=inline,
-        )
+        url = ""
+        exists = False
+        if spectrogram_urls is not None and idx - 1 < len(spectrogram_urls):
+            url = spectrogram_urls[idx - 1]
+            exists = bool(url)
+        else:
+            url, exists = build_spectrogram_url(
+                filename=entry.get("filename", "") or "",
+                spectrogram_dir=spectrogram_dir,
+                image_format=image_format,
+                base_url=base_url,
+                inline=inline,
+            )
         if exists:
             img_html = (
                 f"<img src='{html.escape(url)}' "
@@ -429,6 +437,21 @@ def build_metadata_html(
         )
 
     return "<div style='overflow-y: auto; height: 680px;'>" + "".join(rows) + "</div>"
+
+
+def empty_points_data() -> dict[str, list[Any]]:
+    """Return an empty payload for the points source."""
+    return {
+        "x": [],
+        "y": [],
+        "lat": [],
+        "lon": [],
+        "rank": [],
+        "filename": [],
+        "recordist": [],
+        "date": [],
+        "spectrogram_url": [],
+    }
 
 
 def update_map_range(map_fig: Any, x_values: np.ndarray, y_values: np.ndarray) -> None:
@@ -612,16 +635,7 @@ table_source = ColumnDataSource(
 )
 
 points_source = ColumnDataSource(
-    data={
-        "x": [],
-        "y": [],
-        "lat": [],
-        "lon": [],
-        "rank": [],
-        "filename": [],
-        "recordist": [],
-        "date": [],
-    }
+    data=empty_points_data()
 )
 
 status_div = Div(text="<i>Select an ingroup to display its map and metadata.</i>")
@@ -629,6 +643,37 @@ stats_div = Div(text="")
 metadata_div = Div(
     text="<i>No ingroup selected.</i>",
     width=360,
+)
+SPECTROGRAM_TEMPLATE = """
+<div style="display:flex; align-items:center; justify-content:center;">
+<% if (value) { %>
+  <img src="<%= value %>" style="width: 110px; max-height: 60px; border: 1px solid #ddd;">
+<% } else { %>
+  <span style="color:#888;">No spectrogram</span>
+<% } %>
+</div>
+"""
+spectrogram_formatter = HTMLTemplateFormatter(template=SPECTROGRAM_TEMPLATE)
+metadata_columns = [
+    TableColumn(field="rank", title="Rank", width=60),
+    TableColumn(field="filename", title="Filename", width=180),
+    TableColumn(field="recordist", title="Recordist", width=120),
+    TableColumn(field="date", title="Date", width=90),
+    TableColumn(
+        field="spectrogram_url",
+        title="Spectrogram",
+        formatter=spectrogram_formatter,
+        width=140,
+    ),
+]
+metadata_table = DataTable(
+    source=points_source,
+    columns=metadata_columns,
+    width=360,
+    height=220,
+    row_height=70,
+    selectable=True,
+    index_position=None,
 )
 
 
@@ -658,16 +703,8 @@ def refresh_ingroup_table() -> None:
         f"(size={size_value}, sort={sort_select.value})"
     )
     table_source.selected.indices = []
-    points_source.data = {
-        "x": [],
-        "y": [],
-        "lat": [],
-        "lon": [],
-        "rank": [],
-        "filename": [],
-        "recordist": [],
-        "date": [],
-    }
+    points_source.data = empty_points_data()
+    points_source.selected.indices = []
     metadata_div.text = "<i>No ingroup selected.</i>"
 
 
@@ -692,16 +729,8 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
     entries = build_ingroup_entries(source_id, max_entries)
     if not entries:
         status_div.text = f"<b>No entries found for source {html.escape(source_id)}</b>"
-        points_source.data = {
-            "x": [],
-            "y": [],
-            "lat": [],
-            "lon": [],
-            "rank": [],
-            "filename": [],
-            "recordist": [],
-            "date": [],
-        }
+        points_source.data = empty_points_data()
+        points_source.selected.indices = []
         metadata_div.text = "<i>No ingroup entries available.</i>"
         return
 
@@ -711,6 +740,7 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
     filenames: list[str] = []
     recordists: list[str] = []
     dates: list[str] = []
+    spectrogram_urls: list[str] = []
 
     for idx, entry in enumerate(entries, start=1):
         lat_values.append(entry.get("lat"))
@@ -719,6 +749,14 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
         filenames.append(str(entry.get("filename", "") or ""))
         recordists.append(str(entry.get("recordist", "") or ""))
         dates.append(str(entry.get("date", "") or ""))
+        url, exists = build_spectrogram_url(
+            filename=entry.get("filename", "") or "",
+            spectrogram_dir=SPECTROGRAMS_DIR,
+            image_format=SPECTROGRAM_IMAGE_FORMAT,
+            base_url=SPECTROGRAM_BASE_URL,
+            inline=INLINE_SPECTROGRAMS,
+        )
+        spectrogram_urls.append(url if exists else "")
 
     x_vals, y_vals = lonlat_to_web_mercator(lon_values, lat_values)
     points_source.data = {
@@ -730,13 +768,16 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
         "filename": filenames,
         "recordist": recordists,
         "date": dates,
+        "spectrogram_url": spectrogram_urls,
     }
+    points_source.selected.indices = []
     metadata_div.text = build_metadata_html(
         entries,
         spectrogram_dir=SPECTROGRAMS_DIR,
         image_format=SPECTROGRAM_IMAGE_FORMAT,
         base_url=SPECTROGRAM_BASE_URL,
         inline=INLINE_SPECTROGRAMS,
+        spectrogram_urls=spectrogram_urls,
     )
     status_div.text = (
         f"<b>Ingroup {html.escape(source_id)}</b>: {len(entries)} entries"
@@ -749,16 +790,8 @@ def on_table_selection(attr: str, old: list[int], new: list[int]) -> None:
     """Handle ingroup selection changes."""
     if not new:
         status_div.text = "<i>Select an ingroup to display its map and metadata.</i>"
-        points_source.data = {
-            "x": [],
-            "y": [],
-            "lat": [],
-            "lon": [],
-            "rank": [],
-            "filename": [],
-            "recordist": [],
-            "date": [],
-        }
+        points_source.data = empty_points_data()
+        points_source.selected.indices = []
         metadata_div.text = "<i>No ingroup selected.</i>"
         return
 
@@ -847,6 +880,11 @@ map_plot.scatter(
     size=8,
     color="#2a9d8f",
     alpha=0.8,
+    selection_color="#e76f51",
+    selection_alpha=1.0,
+    selection_line_color="#e76f51",
+    selection_line_width=2,
+    nonselection_alpha=0.2,
 )
 
 map_hover = HoverTool(
@@ -863,7 +901,12 @@ map_plot.add_tools(map_hover)
 controls = column(size_spinner, top_n_spinner, sort_select, stats_div, status_div)
 table_panel = column(Div(text="<b>Top ingroups</b>"), controls, ingroup_table)
 
-metadata_panel = column(Div(text="<b>Ingroup metadata</b>"), metadata_div, width=380)
+metadata_panel = column(
+    Div(text="<b>Ingroup metadata</b>"),
+    metadata_table,
+    metadata_div,
+    width=380,
+)
 layout = row(table_panel, map_plot, metadata_panel, sizing_mode="scale_both")
 
 curdoc().add_root(layout)
