@@ -5,6 +5,7 @@ playlist preview with audio and spectrograms.
 
 Run with:
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_chloris_chloris.yaml
+    bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_carduelis_carduelis.yaml
 """
 
 from __future__ import annotations

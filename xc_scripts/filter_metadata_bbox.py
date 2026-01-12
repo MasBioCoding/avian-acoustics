@@ -13,9 +13,15 @@ Usage:
     python xc_scripts/filter_metadata_bbox.py --metadata /path/to/metadata.csv \
         --config xc_configs_perch/config_chloris_chloris.yaml
         
-    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/metadata.csv" \
-        --config xc_configs_perch/config_chloris_chloris.yaml \
-        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/chloris_chloris"
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/carduelis_carduelis/metadata.csv" \
+        --config xc_configs_perch/config_carduelis_carduelis.yaml \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/carduelis_carduelis"
+        
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/linaria_cannabina/metadata.csv" \
+        --config xc_configs_perch/config_linaria_cannabina.yaml \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/linaria_cannabina"
+        
+        
 """
 
 from __future__ import annotations

@@ -10,18 +10,20 @@ cd /users/masjansma/desktop/birdnetcluster1folder/birdnet_data_pipeline
 Typical usage:
 
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_chloris_chloris.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_carduelis_carduelis.yaml
 
 
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_regulus_ignicapilla.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_regulus_regulus.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_chloris_chloris.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_prunella_modularis.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_curruca_communis.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_carduelis_carduelis.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_linaria_cannabina.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_phylloscopus_trochilus.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs/config_emberiza_calandra.yaml
+
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_regulus_ignicapilla.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_regulus_regulus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_chloris_chloris.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_prunella_modularis.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_curruca_communis.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_acrocephalus_scirpaceus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_carduelis_carduelis.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_linaria_cannabina.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_phylloscopus_trochilus.yaml
+    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_emberiza_calandra.yaml
     
     
     python xc_scripts/generate_spectrograms.py --config xc_configs/config_cettia_cetti.yaml
