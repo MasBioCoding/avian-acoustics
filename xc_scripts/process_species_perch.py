@@ -8,10 +8,14 @@ Clips default to 5 seconds, are resampled to a consistent 32 kHz, and are
 spaced at least 1 second apart.
 
 cd /path/to/birdnet_data_pipeline
-for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
+for me: cd /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 
 Usage:
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_chloris_chloris.yaml --use-existing-detections --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_carduelis_carduelis.yaml --use-existing-detections --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_linaria_cannabina.yaml --use-existing-detections --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_emberiza_calandra.yaml --use-existing-detections --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_curruca_communis.yaml --use-existing-detections --skip-embeddings
 
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_ignicapilla.yaml
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_regulus.yaml
