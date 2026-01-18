@@ -1,7 +1,8 @@
 """
 Prototype Bokeh application for selecting species before building a
 parallel-coordinate plot with optional HDBSCAN coloring plus a
-playlist preview with audio and spectrograms.
+playlist preview with audio and spectrograms, including energy
+distance range filtering and a quantile strip view.
 
 Run with:
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_chloris_chloris.yaml
@@ -15,6 +16,7 @@ import base64
 import errno
 import html
 import io
+import math
 import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,13 +30,16 @@ import yaml
 from bokeh.io import curdoc
 from bokeh.layouts import column, row
 from bokeh.models import (
+    BooleanFilter,
     BoxSelectTool,
     Button,
+    CDSView,
     CheckboxGroup,
     ColumnDataSource,
     CustomJS,
     Div,
     Range1d,
+    RangeSlider,
     Select,
     Spinner,
     TapTool,
@@ -85,10 +90,14 @@ PCP_OTHER_COLOR = "#b0b0b0"
 GRADIENT_LOW = "#2b83ba"
 GRADIENT_HIGH = "#d7191c"
 GRADIENT_MISSING = "#b0b0b0"
-ENERGY_DISTANCE_LOW = "#1d3557"
-ENERGY_DISTANCE_MID = "#29b721"
-ENERGY_DISTANCE_HIGH = "#cdff45"
-DEFAULT_PCP_ALPHA = 0.55
+ENERGY_DISTANCE_LOW = "#1d375d"
+ENERGY_DISTANCE_MID = "#1d3557"
+ENERGY_DISTANCE_MID_LOW = "#55ae4b"
+ENERGY_DISTANCE_MID_HIGH = "#468d3e"
+ENERGY_DISTANCE_HIGH_LOW = "#eef147"
+ENERGY_DISTANCE_HIGH = "#e0ed32"
+DEFAULT_PCP_ALPHA = 1
+DEFAULT_PCP_LINE_WIDTH = 1.2
 DEFAULT_HDBSCAN_MIN_CLUSTER_SIZE = 15
 DEFAULT_HDBSCAN_MIN_SAMPLES = 5
 DEFAULT_SPECTROGRAM_IMAGE_FORMAT = "png"
@@ -589,6 +598,23 @@ def build_energy_distance_lookup(
     return energy_by_key, None
 
 
+def energy_distance_bounds(
+    ingroup_df: pd.DataFrame,
+) -> tuple[float, float] | None:
+    """Return min/max energy distance values from the ingroup mapping."""
+
+    lower_map = {str(col).lower(): col for col in ingroup_df.columns}
+    energy_col = lower_map.get("energy_distance")
+    if not energy_col:
+        return None
+
+    series = pd.to_numeric(ingroup_df[energy_col], errors="coerce")
+    series = series[np.isfinite(series)]
+    if series.empty:
+        return None
+    return float(series.min()), float(series.max())
+
+
 def append_embedding_key_column(
     embeddings_df: pd.DataFrame,
     ingroup_lookup: pd.DataFrame | None,
@@ -841,6 +867,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     ingroup_lookup_error: str | None = None
     ingroup_energy_by_key: dict[str, float] = {}
     ingroup_energy_error: str | None = None
+    energy_distance_limits: tuple[float, float] | None = None
+    energy_color_midpoint_limits: tuple[float, float] | None = None
 
     safe_options = species_options or ["No species found"]
     species_select = Select(
@@ -1188,6 +1216,20 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         active=[],
         width=220,
     )
+    recordist_only_checkbox = CheckboxGroup(
+        labels=["Only unique recordists"],
+        active=[],
+        width=220,
+    )
+    recordist_limit_spinner = Spinner(
+        title="Max clips per recordist",
+        low=1,
+        high=4,
+        step=1,
+        value=1,
+        width=140,
+        disabled=True,
+    )
     color_assignments_box = Div(
         text="<em>Select up to 5 groups to assign colors.</em>",
         render_as_text=False,
@@ -1206,6 +1248,23 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "HDBSCAN",
         ],
         width=160,
+    )
+    energy_color_midpoint_checkbox = CheckboxGroup(
+        labels=["Use energy midpoint range"],
+        active=[],
+        width=220,
+        disabled=True,
+        visible=False,
+    )
+    energy_color_midpoint_slider = RangeSlider(
+        title="Energy distance midpoints",
+        start=0.0,
+        end=1.0,
+        value=(0.0, 1.0),
+        step=0.01,
+        sizing_mode="stretch_width",
+        disabled=True,
+        visible=False,
     )
     active_pcp_groups_header = Div(
         text=ACTIVE_PCP_GROUPS_LABEL,
@@ -1246,6 +1305,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         styles={"color": "#2d2616", "margin-top": "6px"},
         width=1120,
     )
+    pcp_line_width_spinner = Spinner(
+        title="PCP line width",
+        low=0.4,
+        high=6.0,
+        step=0.1,
+        value=DEFAULT_PCP_LINE_WIDTH,
+        width=160,
+    )
     pcp_source = ColumnDataSource(
         data={
             "xs": [],
@@ -1255,6 +1322,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "alpha": [],
             "hdbscan_label": [],
             "playlist_active": [],
+            "energy_distance": [],
+            "energy_active": [],
             "xcid": [],
             "clip_index": [],
             "date": [],
@@ -1288,6 +1357,23 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "y": [],
         }
     )
+    energy_quantile_source = ColumnDataSource(
+        data={
+            "left": [],
+            "right": [],
+            "bottom": [],
+            "top": [],
+            "color": [],
+            "record_index": [],
+            "bin": [],
+            "dim": [],
+            "y": [],
+        }
+    )
+    energy_distance_line_filter = BooleanFilter(booleans=[])
+    energy_distance_point_filter = BooleanFilter(booleans=[])
+    energy_distance_line_view = CDSView(filters=[energy_distance_line_filter])
+    energy_distance_point_view = CDSView(filters=[energy_distance_point_filter])
     dimension_select = Select(
         title="Dimension focus",
         value="",
@@ -1308,13 +1394,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         tools="pan,wheel_zoom,reset",
         background_fill_color="#f7f4ed",
     )
-    pcp_plot.multi_line(
+    pcp_line_renderer = pcp_plot.multi_line(
         xs="xs",
         ys="ys",
         line_color="color",
         line_alpha="alpha",
-        line_width=1.2,
+        line_width=DEFAULT_PCP_LINE_WIDTH,
         source=pcp_source,
+        view=energy_distance_line_view,
     )
     tap_tool = TapTool()
     pcp_plot.add_tools(tap_tool)
@@ -1331,6 +1418,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         fill_alpha="alpha",
         line_alpha="alpha",
         source=pcp_points_source,
+        view=energy_distance_point_view,
     )
     pcp_plot.xaxis.axis_label = "UMAP dimensions"
     pcp_plot.yaxis.axis_label = "UMAP value"
@@ -1382,6 +1470,56 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     dimension_strip_plot.toolbar.autohide = True
     dimension_strip_plot.xaxis.axis_label = "Dimension value (z-score)"
 
+    energy_distance_slider = RangeSlider(
+        title="Energy distance range",
+        start=0.0,
+        end=1.0,
+        value=(0.0, 1.0),
+        step=0.01,
+        sizing_mode="stretch_width",
+        disabled=True,
+    )
+
+    energy_quantile_title = Div(
+        text="Energy distance quantile strip",
+        styles={
+            "font-size": "14px",
+            "font-weight": "600",
+            "margin-top": "8px",
+            "margin-bottom": "4px",
+            "color": "#2d2616",
+        },
+    )
+    energy_quantile_plot = figure(
+        height=280,
+        sizing_mode="stretch_width",
+        toolbar_location="above",
+        tools="xpan,xwheel_zoom,reset",
+        x_range=Range1d(0, 1),
+        y_range=Range1d(0, 1),
+        background_fill_color="#f7f4ed",
+    )
+    energy_quantile_plot.quad(
+        left="left",
+        right="right",
+        bottom="bottom",
+        top="top",
+        fill_color="color",
+        line_color=None,
+        selection_line_color=None,
+        selection_line_width=0,
+        nonselection_line_color=None,
+        source=energy_quantile_source,
+    )
+    energy_quantile_tap_tool = TapTool()
+    energy_quantile_plot.add_tools(energy_quantile_tap_tool)
+    energy_quantile_plot.toolbar.active_tap = energy_quantile_tap_tool
+    energy_quantile_plot.xaxis.axis_label = "Record index (sorted by dimension)"
+    energy_quantile_plot.yaxis.axis_label = "Energy distance"
+    energy_quantile_plot.ygrid.visible = False
+    energy_quantile_plot.xgrid.visible = False
+    energy_quantile_plot.toolbar.autohide = True
+
     condensed_tree_title = Div(
         text="HDBSCAN condensed tree",
         styles={
@@ -1413,10 +1551,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             },
         ),
         pcp_status_box,
+        pcp_line_width_spinner,
         pcp_plot,
         dimension_strip_title,
         dimension_strip_controls,
         dimension_strip_plot,
+        energy_distance_slider,
+        energy_quantile_title,
+        energy_quantile_plot,
         condensed_tree_title,
         condensed_tree_panel,
         sizing_mode="stretch_width",
@@ -1495,8 +1637,80 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
     dimension_select.on_change("value", on_dimension_select_change)
 
+    def on_recordist_toggle_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        """Enable the recordist limit when the toggle is active."""
+
+        recordist_limit_spinner.disabled = not bool(new)
+
+    recordist_only_checkbox.on_change("active", on_recordist_toggle_change)
+
+    def on_energy_distance_slider_change(
+        attr: str,
+        old: tuple[float, float] | list[float],
+        new: tuple[float, float] | list[float],
+    ) -> None:
+        """Refresh strip view and energy filters when the slider changes."""
+
+        update_dimension_strip(reset_range=True)
+        sync_energy_distance_filters()
+
+    energy_distance_slider.on_change("value", on_energy_distance_slider_change)
+
+    def on_energy_color_midpoint_toggle_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        """Apply or release the energy distance midpoint color override."""
+
+        update_color_assignments()
+        apply_color_selection()
+
+    energy_color_midpoint_checkbox.on_change(
+        "active", on_energy_color_midpoint_toggle_change
+    )
+
+    def on_energy_color_midpoint_slider_change(
+        attr: str,
+        old: tuple[float, float] | list[float],
+        new: tuple[float, float] | list[float],
+    ) -> None:
+        """Update energy distance colors when midpoint bounds change."""
+
+        update_color_assignments()
+        if (
+            color_mode_select.value == "Energy distance"
+            and energy_color_override_active()
+        ):
+            apply_color_selection()
+
+    energy_color_midpoint_slider.on_change(
+        "value_throttled", on_energy_color_midpoint_slider_change
+    )
+
+    def on_pcp_line_width_change(attr: str, old: float, new: float) -> None:
+        """Update the PCP line thickness from the spinner."""
+
+        try:
+            width = float(new)
+        except (TypeError, ValueError):
+            return
+        width = max(0.1, width)
+        pcp_line_renderer.glyph.line_width = width
+        selection_glyph = pcp_line_renderer.selection_glyph
+        if hasattr(selection_glyph, "line_width"):
+            selection_glyph.line_width = width
+        nonselection_glyph = pcp_line_renderer.nonselection_glyph
+        if hasattr(nonselection_glyph, "line_width"):
+            nonselection_glyph.line_width = width
+
+    pcp_line_width_spinner.on_change("value", on_pcp_line_width_change)
+
     def update_color_assignments() -> None:
         mode = color_mode_select.value
+        show_energy_controls = mode == "Energy distance"
+        energy_color_midpoint_checkbox.visible = show_energy_controls
+        energy_color_midpoint_slider.visible = show_energy_controls
         if mode == "HDBSCAN":
             if not current_hdbscan_labels:
                 color_assignments_box.text = (
@@ -1558,20 +1772,43 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                     "<em>No energy distance values found.</em>"
                 )
                 return
-            values = series[valid_mask]
-            min_val = float(values.min())
-            max_val = float(values.max())
-            mid_val = (min_val + max_val) / 2
+            midpoint_range = (
+                energy_color_midpoint_range()
+                if energy_color_override_active()
+                else None
+            )
+            if midpoint_range and energy_color_midpoint_limits is not None:
+                min_val, max_val = energy_color_midpoint_limits
+                mid_low, mid_high = midpoint_range
+                legend_entries = [
+                    (f"min {min_val:.4g}", [ENERGY_DISTANCE_LOW]),
+                    (
+                        f"mid low {mid_low:.4g}",
+                        [ENERGY_DISTANCE_MID, ENERGY_DISTANCE_MID_LOW],
+                    ),
+                    (
+                        f"mid high {mid_high:.4g}",
+                        [ENERGY_DISTANCE_MID_HIGH, ENERGY_DISTANCE_HIGH_LOW],
+                    ),
+                    (f"max {max_val:.4g}", [ENERGY_DISTANCE_HIGH]),
+                ]
+            else:
+                values = series[valid_mask]
+                min_val = float(values.min())
+                max_val = float(values.max())
+                mid_val = (min_val + max_val) / 2
+                legend_entries = [
+                    (f"min {min_val:.4g}", [ENERGY_DISTANCE_LOW]),
+                    (f"mid {mid_val:.4g}", [ENERGY_DISTANCE_MID]),
+                    (f"max {max_val:.4g}", [ENERGY_DISTANCE_HIGH]),
+                ]
             html_entries = []
-            for label, color in [
-                (f"min {min_val:.4g}", ENERGY_DISTANCE_LOW),
-                (f"mid {mid_val:.4g}", ENERGY_DISTANCE_MID),
-                (f"max {max_val:.4g}", ENERGY_DISTANCE_HIGH),
-            ]:
-                color_box = (
+            for label, colors in legend_entries:
+                color_box = "".join(
                     f"<span style='display:inline-block;width:14px;height:14px;"
                     f"background:{color};margin-right:6px;border-radius:3px;"
                     f"border:1px solid #d2d2d2;'></span>"
+                    for color in colors
                 )
                 html_entries.append(
                     f"<div style='margin-bottom:4px;'>{color_box}"
@@ -1712,6 +1949,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 ),
                 "hdbscan_label": [""] * point_count,
                 "playlist_active": playlist_active,
+                "energy_distance": current_data.get("energy_distance", []),
+                "energy_active": current_data.get(
+                    "energy_active", [True] * point_count
+                ),
                 "xcid": current_data.get("xcid", []),
                 "clip_index": current_data.get("clip_index", []),
                 "date": current_data.get("date", []),
@@ -1747,6 +1988,373 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             selected_idx = 0
         dimension_select.value = str(selected_idx)
         return selected_idx
+
+    def update_energy_distance_slider(
+        bounds: tuple[float, float] | None,
+    ) -> None:
+        """Refresh the energy distance slider from ingroup mapping values."""
+
+        nonlocal energy_distance_limits
+        if bounds is None:
+            energy_distance_limits = None
+            energy_distance_slider.start = 0.0
+            energy_distance_slider.end = 1.0
+            energy_distance_slider.step = 0.01
+            energy_distance_slider.value = (0.0, 1.0)
+            energy_distance_slider.disabled = True
+            return
+
+        min_val, max_val = bounds
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        span = max_val - min_val
+        if span <= 0:
+            span = max(abs(min_val) * 0.05, 1e-3)
+            max_val = min_val + span
+        step = max(span / 200.0, 1e-4)
+        energy_distance_limits = (min_val, max_val)
+        energy_distance_slider.start = min_val
+        energy_distance_slider.end = max_val
+        energy_distance_slider.step = step
+        energy_distance_slider.value = (min_val, max_val)
+        energy_distance_slider.disabled = False
+
+    def update_energy_color_midpoint_slider(
+        bounds: tuple[float, float] | None,
+    ) -> None:
+        """Refresh the midpoint slider used for energy-distance coloring."""
+
+        nonlocal energy_color_midpoint_limits
+        if bounds is None:
+            energy_color_midpoint_limits = None
+            energy_color_midpoint_slider.start = 0.0
+            energy_color_midpoint_slider.end = 1.0
+            energy_color_midpoint_slider.step = 0.01
+            energy_color_midpoint_slider.value = (0.0, 1.0)
+            energy_color_midpoint_slider.disabled = True
+            energy_color_midpoint_checkbox.active = []
+            energy_color_midpoint_checkbox.disabled = True
+            return
+
+        min_val, max_val = bounds
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        span = max_val - min_val
+        if span <= 0:
+            span = max(abs(min_val) * 0.05, 1e-3)
+            max_val = min_val + span
+        step = max(span / 200.0, 1e-4)
+        energy_color_midpoint_limits = (min_val, max_val)
+        energy_color_midpoint_slider.start = min_val
+        energy_color_midpoint_slider.end = max_val
+        energy_color_midpoint_slider.step = step
+        energy_color_midpoint_slider.value = (
+            min_val + span / 3.0,
+            min_val + span * 2.0 / 3.0,
+        )
+        energy_color_midpoint_slider.disabled = False
+        energy_color_midpoint_checkbox.disabled = False
+
+    def energy_distance_slider_range() -> tuple[float, float] | None:
+        """Return the current energy distance range selection."""
+
+        if energy_distance_limits is None:
+            return None
+        try:
+            low_val, high_val = energy_distance_slider.value
+        except (TypeError, ValueError):
+            return None
+        try:
+            low = float(low_val)
+            high = float(high_val)
+        except (TypeError, ValueError):
+            return None
+        if low > high:
+            low, high = high, low
+        return low, high
+
+    def energy_color_midpoint_range() -> tuple[float, float] | None:
+        """Return midpoint bounds for energy-distance color mapping."""
+
+        if energy_color_midpoint_limits is None:
+            return None
+        try:
+            low_val, high_val = energy_color_midpoint_slider.value
+        except (TypeError, ValueError):
+            return None
+        try:
+            low = float(low_val)
+            high = float(high_val)
+        except (TypeError, ValueError):
+            return None
+        if low > high:
+            low, high = high, low
+        min_val, max_val = energy_color_midpoint_limits
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        low = max(min_val, min(low, max_val))
+        high = max(min_val, min(high, max_val))
+        return low, high
+
+    def energy_color_override_active() -> bool:
+        """Return True when midpoint bounds override energy-distance colors."""
+
+        return bool(energy_color_midpoint_checkbox.active) and (
+            energy_color_midpoint_limits is not None
+        )
+
+    def energy_distance_filter_active() -> bool:
+        """Return True when the slider narrows the energy distance range."""
+
+        current = energy_distance_slider_range()
+        if current is None or energy_distance_limits is None:
+            return False
+        low, high = current
+        base_low, base_high = energy_distance_limits
+        return not (
+            math.isclose(low, base_low, rel_tol=1e-6, abs_tol=1e-9)
+            and math.isclose(high, base_high, rel_tol=1e-6, abs_tol=1e-9)
+        )
+
+    def energy_distance_mask(values: list[Any]) -> list[bool]:
+        """Return a boolean mask for energy distances within the slider range."""
+
+        if not energy_distance_filter_active():
+            return [True] * len(values)
+        current_range = energy_distance_slider_range()
+        if current_range is None:
+            return [True] * len(values)
+        low, high = current_range
+        mask: list[bool] = []
+        for value in values:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                mask.append(False)
+                continue
+            if not np.isfinite(numeric):
+                mask.append(False)
+                continue
+            mask.append(low <= numeric <= high)
+        return mask
+
+    def sync_energy_distance_filters() -> None:
+        """Apply the energy distance mask to plot views and playlist state."""
+
+        values = pcp_source.data.get("energy_distance", [])
+        mask = energy_distance_mask(values)
+        energy_distance_line_filter.booleans = mask
+        if current_point_dims > 0 and mask:
+            energy_distance_point_filter.booleans = np.repeat(
+                mask, current_point_dims
+            ).tolist()
+        else:
+            energy_distance_point_filter.booleans = []
+        if pcp_source.data:
+            current_data = dict(pcp_source.data)
+            current_data["energy_active"] = mask
+            pcp_source.data = current_data
+
+    def update_energy_distance_grid(
+        selected_dim: int | None = None,
+        reset_range: bool = True,
+    ) -> None:
+        """Populate the energy distance quantile strip for the current selection."""
+
+        if selected_dim is None:
+            try:
+                selected_dim = int(dimension_select.value)
+            except (TypeError, ValueError):
+                selected_dim = 0
+
+        if current_point_dims <= 0 or not pcp_source.data.get("ys"):
+            energy_quantile_source.data = {
+                "left": [],
+                "right": [],
+                "bottom": [],
+                "top": [],
+                "color": [],
+                "record_index": [],
+                "bin": [],
+                "dim": [],
+                "y": [],
+            }
+            if reset_range:
+                energy_quantile_plot.x_range.start = 0
+                energy_quantile_plot.x_range.end = 1
+                energy_quantile_plot.y_range.start = 0
+                energy_quantile_plot.y_range.end = 1
+            return
+
+        if selected_dim < 0 or selected_dim >= current_point_dims:
+            selected_dim = 0
+
+        ys = pcp_source.data.get("ys", [])
+        energy_values = pcp_source.data.get("energy_distance", [])
+        values: list[float] = []
+        record_indices: list[int] = []
+
+        for idx, row in enumerate(ys):
+            if not isinstance(row, (list, tuple)) or selected_dim >= len(row):
+                continue
+            try:
+                value = float(row[selected_dim])
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(value):
+                continue
+            values.append(value)
+            record_indices.append(idx)
+
+        if not values:
+            energy_quantile_source.data = {
+                "left": [],
+                "right": [],
+                "bottom": [],
+                "top": [],
+                "color": [],
+                "record_index": [],
+                "bin": [],
+                "dim": [],
+                "y": [],
+            }
+            if reset_range:
+                energy_quantile_plot.x_range.start = 0
+                energy_quantile_plot.x_range.end = 1
+                energy_quantile_plot.y_range.start = 0
+                energy_quantile_plot.y_range.end = 1
+            return
+
+        order = np.argsort(values)
+        ordered_indices = [record_indices[idx] for idx in order]
+        mask = energy_distance_mask(energy_values)
+        if mask:
+            ordered_indices = [
+                idx
+                for idx in ordered_indices
+                if idx < len(mask) and mask[idx]
+            ]
+
+        if not ordered_indices:
+            energy_quantile_source.data = {
+                "left": [],
+                "right": [],
+                "bottom": [],
+                "top": [],
+                "color": [],
+                "record_index": [],
+                "bin": [],
+                "dim": [],
+                "y": [],
+            }
+            if reset_range:
+                energy_quantile_plot.x_range.start = 0
+                energy_quantile_plot.x_range.end = 1
+                energy_quantile_plot.y_range.start = 0
+                energy_quantile_plot.y_range.end = 1
+            return
+
+        if energy_distance_limits is None:
+            fallback_values: list[float] = []
+            for idx in ordered_indices:
+                if idx >= len(energy_values):
+                    continue
+                try:
+                    numeric = float(energy_values[idx])
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(numeric):
+                    continue
+                fallback_values.append(numeric)
+            if fallback_values:
+                min_val = float(min(fallback_values))
+                max_val = float(max(fallback_values))
+            else:
+                min_val = 0.0
+                max_val = 1.0
+        else:
+            min_val, max_val = energy_distance_limits
+
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+        span = max_val - min_val
+        if span <= 0:
+            span = max(abs(min_val) * 0.05, 1e-3)
+            max_val = min_val + span
+
+        edges = [min_val + span * (idx / 5.0) for idx in range(6)]
+
+        lefts: list[float] = []
+        rights: list[float] = []
+        bottoms: list[float] = []
+        tops: list[float] = []
+        colors: list[str] = []
+        record_list: list[int] = []
+        bin_list: list[int] = []
+        dim_list: list[int] = []
+        dim_value_list: list[float] = []
+
+        dim_value_map = {
+            record_idx: value for record_idx, value in zip(record_indices, values)
+        }
+
+        for pos, record_idx in enumerate(ordered_indices):
+            active_bin: int | None = None
+            dim_value = dim_value_map.get(record_idx)
+            if dim_value is None or not np.isfinite(dim_value):
+                dim_value = 0.0
+            if record_idx < len(energy_values):
+                try:
+                    energy_val = float(energy_values[record_idx])
+                except (TypeError, ValueError):
+                    energy_val = None
+                if energy_val is not None and np.isfinite(energy_val):
+                    if energy_val <= edges[0]:
+                        active_bin = 0
+                    elif energy_val >= edges[-1]:
+                        active_bin = 4
+                    else:
+                        active_bin = int(
+                            np.searchsorted(edges, energy_val, side="right") - 1
+                        )
+                        if active_bin < 0:
+                            active_bin = 0
+                        elif active_bin > 4:
+                            active_bin = 4
+
+            for bin_idx in range(5):
+                lefts.append(float(pos))
+                rights.append(float(pos + 1))
+                bottoms.append(edges[bin_idx])
+                tops.append(edges[bin_idx + 1])
+                record_list.append(record_idx)
+                bin_list.append(bin_idx)
+                dim_list.append(selected_dim)
+                dim_value_list.append(float(dim_value))
+                if active_bin is not None and bin_idx == active_bin:
+                    colors.append(ENERGY_DISTANCE_HIGH)
+                else:
+                    colors.append(ENERGY_DISTANCE_LOW)
+
+        energy_quantile_source.data = {
+            "left": lefts,
+            "right": rights,
+            "bottom": bottoms,
+            "top": tops,
+            "color": colors,
+            "record_index": record_list,
+            "bin": bin_list,
+            "dim": dim_list,
+            "y": dim_value_list,
+        }
+        energy_quantile_plot.xaxis.axis_label = (
+            f"Records sorted by Dim {selected_dim + 1}"
+        )
+        if reset_range:
+            energy_quantile_plot.x_range.start = -0.5
+            energy_quantile_plot.x_range.end = len(ordered_indices) + 0.5
+        energy_quantile_plot.y_range.start = min_val
+        energy_quantile_plot.y_range.end = max_val
 
     def compute_dimension_strip_bounds(
         sorted_values: np.ndarray,
@@ -1842,6 +2450,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             if reset_range:
                 dimension_strip_plot.x_range.start = -1
                 dimension_strip_plot.x_range.end = 1
+            update_energy_distance_grid(
+                selected_dim=selected_dim, reset_range=reset_range
+            )
             return
 
         if selected_dim < 0 or selected_dim >= current_point_dims:
@@ -1850,6 +2461,11 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         ys = pcp_source.data.get("ys", [])
         colors = pcp_source.data.get("color", [])
         alphas = pcp_source.data.get("alpha", [])
+        energy_values = pcp_source.data.get("energy_distance", [])
+        energy_range = energy_distance_slider_range()
+        filter_active = energy_distance_filter_active() and energy_range is not None
+        if filter_active:
+            low, high = energy_range
 
         values: list[float] = []
         record_indices: list[int] = []
@@ -1865,6 +2481,17 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 continue
             if not np.isfinite(value):
                 continue
+            if filter_active:
+                if idx >= len(energy_values):
+                    continue
+                try:
+                    energy_val = float(energy_values[idx])
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(energy_val):
+                    continue
+                if energy_val < low or energy_val > high:
+                    continue
             values.append(value)
             record_indices.append(idx)
             bar_colors.append(
@@ -1891,6 +2518,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             if reset_range:
                 dimension_strip_plot.x_range.start = -1
                 dimension_strip_plot.x_range.end = 1
+            update_energy_distance_grid(
+                selected_dim=selected_dim, reset_range=reset_range
+            )
             return
 
         order = np.argsort(values)
@@ -1927,6 +2557,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             dimension_strip_plot.x_range.start = min_x - padding
             dimension_strip_plot.x_range.end = max_x + padding
 
+        update_energy_distance_grid(
+            selected_dim=selected_dim, reset_range=reset_range
+        )
+
     def update_point_styles(
         colors: list[str],
         alpha: list[float],
@@ -1956,6 +2590,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "record_index": [],
                 "y": [],
             }
+            update_energy_distance_grid(reset_range=reset_strip_range)
+            sync_energy_distance_filters()
             return
 
         point_colors = np.repeat(colors, current_point_dims).tolist()
@@ -1967,6 +2603,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         updated["playlist_active"] = point_active
         pcp_points_source.data = updated
         update_dimension_strip(reset_range=reset_strip_range)
+        sync_energy_distance_filters()
 
     def apply_color_selection() -> None:
         """Recolor PCP lines based on current color-by selections."""
@@ -2002,6 +2639,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "alpha": alpha,
                 "hdbscan_label": labels,
                 "playlist_active": playlist_active,
+                "energy_distance": current_data.get("energy_distance", []),
+                "energy_active": current_data.get(
+                    "energy_active", [True] * point_count
+                ),
                 "xcid": current_data.get("xcid", []),
                 "clip_index": current_data.get("clip_index", []),
                 "date": current_data.get("date", []),
@@ -2124,15 +2765,64 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             if not valid_mask.any():
                 return [GRADIENT_MISSING] * point_count
 
-            values = series[valid_mask]
-            min_val = float(values.min())
-            max_val = float(values.max())
-            mid_val = (min_val + max_val) / 2
-
             key_to_value = {
                 key_to_str(k): float(v)
                 for k, v in zip(current_umap_metadata["__key__"], series)
             }
+
+            midpoint_range = (
+                energy_color_midpoint_range()
+                if energy_color_override_active()
+                else None
+            )
+            if midpoint_range and energy_color_midpoint_limits is not None:
+                min_val, max_val = energy_color_midpoint_limits
+                if min_val > max_val:
+                    min_val, max_val = max_val, min_val
+                if max_val == min_val:
+                    return [ENERGY_DISTANCE_MID] * point_count
+                mid_low, mid_high = midpoint_range
+                colors: list[str] = []
+                for key in keys:
+                    val = key_to_value.get(key)
+                    if val is None or np.isnan(val):
+                        colors.append(GRADIENT_MISSING)
+                        continue
+                    numeric = min(max(float(val), min_val), max_val)
+                    if numeric <= mid_low:
+                        denom = mid_low - min_val
+                        frac = (numeric - min_val) / denom if denom else 0.0
+                        colors.append(
+                            interpolate_color(
+                                ENERGY_DISTANCE_LOW, ENERGY_DISTANCE_MID, frac
+                            )
+                        )
+                    elif numeric <= mid_high:
+                        denom = mid_high - mid_low
+                        frac = (numeric - mid_low) / denom if denom else 0.0
+                        colors.append(
+                            interpolate_color(
+                                ENERGY_DISTANCE_MID_LOW,
+                                ENERGY_DISTANCE_MID_HIGH,
+                                frac,
+                            )
+                        )
+                    else:
+                        denom = max_val - mid_high
+                        frac = (numeric - mid_high) / denom if denom else 0.0
+                        colors.append(
+                            interpolate_color(
+                                ENERGY_DISTANCE_HIGH_LOW,
+                                ENERGY_DISTANCE_HIGH,
+                                frac,
+                            )
+                        )
+                return colors
+
+            values = series[valid_mask]
+            min_val = float(values.min())
+            max_val = float(values.max())
+            mid_val = (min_val + max_val) / 2
 
             colors: list[str] = []
             for key in keys:
@@ -2352,6 +3042,61 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             return None
         return lat_col, lon_col
 
+    def find_recordist_column(metadata_df: pd.DataFrame) -> str | None:
+        """Return recordist column name when present (case-insensitive)."""
+
+        recordist_candidates = {"recordist", "recorder", "recordist_name", "rec"}
+        for col in metadata_df.columns:
+            if str(col).lower() in recordist_candidates:
+                return col
+        return None
+
+    def filter_recordists_by_energy_distance(
+        embeddings_df: pd.DataFrame,
+        metadata_df: pd.DataFrame,
+        recordist_col: str,
+        energy_series: pd.Series,
+        max_per_recordist: int,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, int]:
+        """Limit each recordist to top energy distance rows."""
+
+        if len(energy_series) != len(metadata_df):
+            raise ValueError("Energy distance values do not align with metadata.")
+
+        recordist_series = (
+            metadata_df[recordist_col].fillna("").astype(str).str.strip()
+        )
+        energy_values = (
+            pd.to_numeric(energy_series, errors="coerce")
+            .fillna(-np.inf)
+            .to_numpy()
+        )
+        positions = np.arange(len(metadata_df))
+        ranking_df = pd.DataFrame(
+            {
+                "recordist": recordist_series.to_numpy(),
+                "energy_distance": energy_values,
+                "pos": positions,
+            }
+        )
+        ranking_df = ranking_df.sort_values(
+            ["recordist", "energy_distance", "pos"],
+            ascending=[True, False, True],
+        )
+        max_per_recordist = max(1, min(4, max_per_recordist))
+        kept_positions = (
+            ranking_df.groupby("recordist", sort=False)
+            .head(max_per_recordist)["pos"]
+            .to_numpy()
+        )
+        mask = np.zeros(len(metadata_df), dtype=bool)
+        mask[kept_positions] = True
+        removed = int(len(mask) - mask.sum())
+        filtered_embeddings = embeddings_df.loc[mask].reset_index(drop=True)
+        filtered_metadata = metadata_df.loc[mask].reset_index(drop=True)
+        filtered_energy = energy_series.loc[mask].reset_index(drop=True)
+        return filtered_embeddings, filtered_metadata, filtered_energy, removed
+
     def compute_energy_distance() -> None:
         """Compute energy distance for each HDBSCAN cluster vs all other points."""
 
@@ -2385,12 +3130,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             )
             return
 
-        recordist_col = None
-        recordist_candidates = {"recordist", "recorder", "recordist_name", "rec"}
-        for col in current_umap_metadata.columns:
-            if str(col).lower() in recordist_candidates:
-                recordist_col = col
-                break
+        recordist_col = find_recordist_column(current_umap_metadata)
         if recordist_col is not None:
             recordist_series = (
                 current_umap_metadata[recordist_col]
@@ -2935,6 +3675,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "alpha": [],
                 "hdbscan_label": [],
                 "playlist_active": [],
+                "energy_distance": [],
+                "energy_active": [],
                 "xcid": [],
                 "clip_index": [],
                 "date": [],
@@ -2956,6 +3698,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             current_point_dims = 0
             update_dimension_select_options(0)
             update_dimension_strip(reset_range=True)
+            sync_energy_distance_filters()
             pcp_status_box.text = "<em>No points available for the plot.</em>"
             return
 
@@ -3000,12 +3743,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         else:
             date_values = [""] * record_count
 
-        recordist_col = None
-        recordist_candidates = {"recordist", "recorder", "recordist_name", "rec"}
-        for col in metadata_df.columns:
-            if str(col).lower() in recordist_candidates:
-                recordist_col = col
-                break
+        recordist_col = find_recordist_column(metadata_df)
         if recordist_col is not None:
             recordist_values = (
                 metadata_df[recordist_col].fillna("").astype(str).tolist()
@@ -3028,6 +3766,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         else:
             spectrogram_inline = [""] * record_count
 
+        if "energy_distance" in metadata_df.columns:
+            energy_series = pd.to_numeric(
+                metadata_df["energy_distance"], errors="coerce"
+            )
+            energy_values = energy_series.to_numpy().tolist()
+        else:
+            energy_values = [np.nan] * record_count
+
         pcp_source.data = {
             "xs": xs,
             "ys": ys,
@@ -3036,6 +3782,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "alpha": alphas,
             "hdbscan_label": [""] * record_count,
             "playlist_active": playlist_active,
+            "energy_distance": energy_values,
+            "energy_active": [True] * record_count,
             "xcid": xcid_values,
             "clip_index": clip_index_values,
             "date": date_values,
@@ -3202,6 +3950,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         ingroup_lookup_error = None
         ingroup_energy_by_key = {}
         ingroup_energy_error = None
+        update_energy_distance_slider(None)
+        update_energy_color_midpoint_slider(None)
         ingroup_base = current_embeddings_path.parent
         ingroup_mapping_path = resolve_ingroup_mapping_path(ingroup_base, root_path)
         if ingroup_mapping_path is None:
@@ -3210,6 +3960,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 f"{ingroup_base / 'ingroup_energy_with_meta.csv'}."
             )
             ingroup_energy_error = ingroup_lookup_error
+            update_energy_distance_slider(None)
+            update_energy_color_midpoint_slider(None)
         else:
             try:
                 ingroup_df = pd.read_csv(ingroup_mapping_path)
@@ -3217,12 +3969,17 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 ingroup_energy_by_key, ingroup_energy_error = (
                     build_energy_distance_lookup(ingroup_df)
                 )
+                energy_bounds = energy_distance_bounds(ingroup_df)
+                update_energy_distance_slider(energy_bounds)
+                update_energy_color_midpoint_slider(energy_bounds)
             except Exception as exc:  # noqa: BLE001
                 ingroup_lookup_error = (
                     "Failed to load ingroup mapping "
                     f"{ingroup_mapping_path}: {exc}"
                 )
                 ingroup_energy_error = ingroup_lookup_error
+                update_energy_distance_slider(None)
+                update_energy_color_midpoint_slider(None)
         metadata_path = root_path / "embeddings" / species_slug / "metadata.csv"
         metadata_total = 0
         metadata_unique = 0
@@ -3257,6 +4014,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "alpha": [],
             "hdbscan_label": [],
             "playlist_active": [],
+            "energy_distance": [],
+            "energy_active": [],
             "xcid": [],
             "clip_index": [],
             "date": [],
@@ -3278,6 +4037,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         current_point_dims = 0
         update_dimension_select_options(0)
         update_dimension_strip(reset_range=True)
+        sync_energy_distance_filters()
         pcp_status_box.text = "<em>Calculate to generate the parallel coordinates plot.</em>"
         playlist_panel.text = (
             "<em>Click a point or strip block on a dimension to list nearby recordings.</em>"
@@ -3589,19 +4349,26 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             return
 
         energy_only = bool(energy_only_checkbox.active)
+        recordist_only = bool(recordist_only_checkbox.active)
         energy_filtered = 0
-        if energy_only:
+        recordist_filtered = 0
+        recordist_limit = 0
+        energy_series: pd.Series | None = None
+
+        if energy_only or recordist_only:
             energy_series = energy_distance_series(
                 selected_embeddings, ingroup_energy_by_key
             )
             if energy_series is None:
                 umap_status_box.text = (
-                    "<em>Energy distance not available; disable filter.</em>"
+                    "<em>Energy distance not available; disable filters.</em>"
                 )
                 missing_metadata_warning.visible = False
                 return
-            energy_mask = energy_series.notna()
-            if not energy_mask.any():
+
+        if energy_only:
+            energy_mask = energy_series.notna() if energy_series is not None else None
+            if energy_mask is None or not energy_mask.any():
                 umap_status_box.text = (
                     "<em>No embeddings with energy distance values.</em>"
                 )
@@ -3615,6 +4382,53 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 selected_metadata = (
                     selected_metadata.loc[energy_mask].reset_index(drop=True)
                 )
+                energy_series = energy_series.loc[energy_mask].reset_index(drop=True)
+
+        if recordist_only:
+            recordist_col = find_recordist_column(selected_metadata)
+            if recordist_col is None:
+                umap_status_box.text = (
+                    "<em>Recordist column not found; disable filter.</em>"
+                )
+                missing_metadata_warning.visible = False
+                return
+            try:
+                recordist_limit = int(recordist_limit_spinner.value or 1)
+            except (TypeError, ValueError):
+                umap_status_box.text = (
+                    "<em>Invalid recordist limit; choose 1-4.</em>"
+                )
+                missing_metadata_warning.visible = False
+                return
+            if energy_series is None:
+                umap_status_box.text = (
+                    "<em>Energy distance not available; disable recordist filter.</em>"
+                )
+                missing_metadata_warning.visible = False
+                return
+            try:
+                (
+                    selected_embeddings,
+                    selected_metadata,
+                    energy_series,
+                    recordist_filtered,
+                ) = filter_recordists_by_energy_distance(
+                    selected_embeddings,
+                    selected_metadata,
+                    recordist_col,
+                    energy_series,
+                    recordist_limit,
+                )
+            except ValueError as exc:
+                umap_status_box.text = f"<em>{html.escape(str(exc))}</em>"
+                missing_metadata_warning.visible = False
+                return
+            if selected_embeddings.empty:
+                umap_status_box.text = (
+                    "<em>No recordings available after recordist filtering.</em>"
+                )
+                missing_metadata_warning.visible = False
+                return
 
         try:
             embedding_matrix, valid_indices = embedding_matrix_from_dataframe(
@@ -3716,6 +4530,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 f" Energy distance filter removed {energy_filtered} recordings."
                 if energy_filtered
                 else " Energy distance filter applied."
+            )
+            umap_status_box.text += suffix
+        if recordist_only:
+            suffix = (
+                f" Recordist filter kept max {recordist_limit} per recordist,"
+                f" removed {recordist_filtered} recordings."
+                if recordist_filtered
+                else f" Recordist filter kept max {recordist_limit} per recordist."
             )
             umap_status_box.text += suffix
         hdbscan_status_box.text = (
@@ -3887,6 +4709,11 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             spectrogram_image_format=SPECTROGRAM_IMAGE_FORMAT,
             inline_spectrograms=INLINE_SPECTROGRAMS,
         )
+        selected_metadata = append_energy_distance(
+            selected_metadata,
+            selected_embeddings,
+            ingroup_energy_by_key,
+        )
 
         if embedding_matrix.size == 0:
             pca_status_box.text = "<em>No embeddings available after filtering.</em>"
@@ -4046,6 +4873,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "playlist_active": current_data.get(
                 "playlist_active", [True] * point_count
             ),
+            "energy_distance": current_data.get("energy_distance", []),
+            "energy_active": current_data.get(
+                "energy_active", [True] * point_count
+            ),
             "xcid": current_data.get("xcid", []),
             "clip_index": current_data.get("clip_index", []),
             "date": current_data.get("date", []),
@@ -4110,7 +4941,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         const mode = color_mode.value || 'Groups';
         const useFilter = (mode === 'Groups' || mode === 'HDBSCAN');
         const playlistActive = r['playlist_active'] || [];
+        const energyActive = r['energy_active'] || [];
 
+        if (energyActive.length && !energyActive[recordIdx]) {
+            pane.text = `<b>Dim ${dim + 1}</b><br><em>Selected point is outside the energy distance range.</em>`;
+            return;
+        }
         if (useFilter && playlistActive.length && !playlistActive[recordIdx]) {
             pane.text = `<b>Dim ${dim + 1}</b><br><em>Selected point is not in the active ${mode.toLowerCase()} groups.</em>`;
             return;
@@ -4130,6 +4966,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         const y0 = Number(p['y'][idx]);
         const items = [];
         for (let j = 0; j < ys.length; j++) {
+            if (energyActive.length && !energyActive[j]) {
+                continue;
+            }
             if (useFilter && playlistActive.length && !playlistActive[j]) {
                 continue;
             }
@@ -4286,10 +5125,22 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     )
     dimension_strip_source.selected.js_on_change("indices", dimension_strip_callback)
 
+    energy_quantile_callback = CustomJS(
+        args=dict(
+            points=energy_quantile_source,
+            records=pcp_source,
+            pane=playlist_panel,
+            color_mode=color_mode_select,
+        ),
+        code=playlist_callback_code,
+    )
+    energy_quantile_source.selected.js_on_change("indices", energy_quantile_callback)
+
     checkbox_panel = column(
         umap_title,
         row(all_toggle_label, all_toggle_count, all_toggle, sizing_mode="fixed"),
         energy_only_checkbox,
+        row(recordist_only_checkbox, recordist_limit_spinner, sizing_mode="fixed"),
         checkbox_sections_holder,
         width=520,
         sizing_mode="fixed",
@@ -4305,6 +5156,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     color_panel = column(
         color_title,
         color_mode_select,
+        energy_color_midpoint_checkbox,
+        energy_color_midpoint_slider,
         color_sections_holder,
         active_pcp_groups_section,
         hdbscan_clusters_label,
