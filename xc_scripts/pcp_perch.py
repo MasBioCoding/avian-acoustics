@@ -7,6 +7,7 @@ distance range filtering and a quantile strip view.
 Run with:
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_chloris_chloris.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_carduelis_carduelis.yaml
+    bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_linaria_cannabina.yaml
 """
 
 from __future__ import annotations
@@ -96,7 +97,7 @@ ENERGY_DISTANCE_MID_LOW = "#55ae4b"
 ENERGY_DISTANCE_MID_HIGH = "#468d3e"
 ENERGY_DISTANCE_HIGH_LOW = "#eef147"
 ENERGY_DISTANCE_HIGH = "#e0ed32"
-DEFAULT_PCP_ALPHA = 1
+DEFAULT_PCP_ALPHA = 0.75
 DEFAULT_PCP_LINE_WIDTH = 1.2
 DEFAULT_HDBSCAN_MIN_CLUSTER_SIZE = 15
 DEFAULT_HDBSCAN_MIN_SAMPLES = 5
