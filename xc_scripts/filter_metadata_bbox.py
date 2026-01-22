@@ -18,8 +18,16 @@ Usage:
         --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/carduelis_carduelis"
         
     python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/linaria_cannabina/metadata.csv" \
-        --config xc_configs_perch/config_linaria_cannabina.yaml \
+        --config "xc_configs_perch/config_linaria_cannabina.yaml" \
         --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/linaria_cannabina"
+        
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/curruca_communis/metadata.csv" \
+        --config "xc_configs_perch/config_curruca_communis.yaml" \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/curruca_communis"
+
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv" \
+        --config "xc_configs_perch/config_emberiza_calandra.yaml" \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/emberiza_calandra"
         
         
 """
