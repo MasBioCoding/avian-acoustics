@@ -1,5 +1,6 @@
 """
-Interactive ingroup explorer with a Mercator map and spectrogram previews.
+Interactive ingroup explorer with a Mercator map, spectrogram previews, and a
+monthly density histogram.
 
 Run (from repository root):
     bokeh serve xc_scripts/ingroup_map_app.py --show --args \
@@ -31,6 +32,12 @@ Config tweaks (config yaml):
     --ingroup-csv "/Users/masjansma/Desktop/temp_edvecs/ingroup_energy_with_meta.csv" \
     --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
     --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/carduelis_carduelis"
+    
+    bokeh serve xc_scripts/ingroup_map_app.py --show --args \
+    --config xc_configs_perch/config_linaria_cannabina.yaml \
+    --ingroup-csv "/Users/masjansma/Desktop/temp_edvecs/ingroup_energy_with_meta.csv" \
+    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
+    --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/linaria_cannabina"
 
 Inference mode:
     bokeh serve xc_scripts/ingroup_map_app.py --show --args \
@@ -44,6 +51,12 @@ Inference mode:
     --inference-csv "/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/inference.csv" \
     --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
     --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/chloris_chloris"
+    
+    bokeh serve xc_scripts/ingroup_map_app_inferencecheck.py --show --args \
+    --config xc_configs_perch/config_linaria_cannabina.yaml \
+    --inference-csv "/Volumes/Z Slim/zslim_birdcluster/embeddings/linaria_cannabina/inference.csv" \
+    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
+    --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/linaria_cannabina"
     
 """
 
@@ -501,6 +514,105 @@ def build_inference_metadata(
     return pd.DataFrame(rows), missing
 
 
+MONTH_LABELS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
+MONTH_NAME_LOOKUP = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+
+def extract_month(value: Any) -> Optional[int]:
+    """Extract a month number from a date-like value."""
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    lower_text = text.lower()
+    for name, number in MONTH_NAME_LOOKUP.items():
+        if re.search(rf"\b{name}\b", lower_text):
+            return number
+
+    match = re.search(r"\b\d{4}[-/\.](\d{1,2})(?:[-/\.]\d{1,2})?\b", text)
+    if match:
+        month = int(match.group(1))
+        if 1 <= month <= 12:
+            return month
+
+    match = re.search(r"\b\d{1,2}[-/\.](\d{1,2})[-/\.]\d{4}\b", text)
+    if match:
+        month = int(match.group(1))
+        if 1 <= month <= 12:
+            return month
+
+    match = re.search(r"\b(\d{1,2})[-/\.]\d{4}\b", text)
+    if match:
+        month = int(match.group(1))
+        if 1 <= month <= 12:
+            return month
+
+    return None
+
+
+def month_histogram_counts(date_values: list[Any]) -> list[int]:
+    """Return month counts for a list of date values."""
+    counts = [0] * 12
+    for value in date_values:
+        month = extract_month(value)
+        if month is None:
+            continue
+        counts[month - 1] += 1
+    return counts
+
+
+def update_month_histogram(date_values: list[Any]) -> None:
+    """Update the month histogram plot with new date values."""
+    counts = month_histogram_counts(date_values)
+    month_hist_source.data = {"month": MONTH_LABELS, "count": counts}
+    max_count = max(counts) if counts else 0
+    month_hist_plot.y_range.start = 0
+    month_hist_plot.y_range.end = max(1.0, max_count * 1.15)
+    month_hist_plot.title.text = f"Monthly density (n={sum(counts)})"
+
+
 def apply_recordist_limit(
     entries_df: pd.DataFrame, max_per_recordist: Optional[int]
 ) -> pd.DataFrame:
@@ -892,6 +1004,12 @@ table_source = ColumnDataSource(
 )
 
 points_source = ColumnDataSource(data=empty_points_data())
+month_hist_source = ColumnDataSource(
+    data={
+        "month": MONTH_LABELS,
+        "count": [0] * 12,
+    }
+)
 
 status_text = (
     "<i>Select an ingroup to display its map and metadata.</i>"
@@ -974,6 +1092,7 @@ def refresh_ingroup_table() -> None:
     points_source.data = empty_points_data()
     points_source.selected.indices = []
     metadata_div.text = "<i>No ingroup selected.</i>"
+    update_month_histogram([])
 
 
 def build_ingroup_entries(source_id: str, max_entries: int) -> list[dict[str, Any]]:
@@ -1000,6 +1119,7 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
         points_source.data = empty_points_data()
         points_source.selected.indices = []
         metadata_div.text = "<i>No ingroup entries available.</i>"
+        update_month_histogram([])
         return
 
     lat_values: list[float] = []
@@ -1055,6 +1175,7 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
     )
     if AUTO_ZOOM:
         update_map_range(map_plot, x_vals, y_vals)
+    update_month_histogram([entry.get("date") for entry in entries])
 
 
 def on_table_selection(attr: str, old: list[int], new: list[int]) -> None:
@@ -1064,6 +1185,7 @@ def on_table_selection(attr: str, old: list[int], new: list[int]) -> None:
         points_source.data = empty_points_data()
         points_source.selected.indices = []
         metadata_div.text = "<i>No ingroup selected.</i>"
+        update_month_histogram([])
         return
 
     if len(new) > 1:
@@ -1091,6 +1213,7 @@ def update_inference_view() -> None:
         points_source.data = empty_points_data()
         points_source.selected.indices = []
         metadata_div.text = "<i>No inference entries available.</i>"
+        update_month_histogram([])
         return
 
     max_per_recordist = recordist_limit_value()
@@ -1100,6 +1223,7 @@ def update_inference_view() -> None:
         points_source.data = empty_points_data()
         points_source.selected.indices = []
         metadata_div.text = "<i>No inference entries available.</i>"
+        update_month_histogram([])
         return
 
     score_series = pd.to_numeric(filtered["logit_score"], errors="coerce").fillna(
@@ -1165,6 +1289,7 @@ def update_inference_view() -> None:
 
     if AUTO_ZOOM:
         update_map_range(map_plot, x_vals, y_vals)
+    update_month_histogram(sorted_df["date"].tolist())
 
 
 if not USE_INFERENCE:
@@ -1271,6 +1396,31 @@ map_hover = HoverTool(
 )
 map_plot.add_tools(map_hover)
 
+month_hist_plot = figure(
+    title="Monthly density (n=0)",
+    x_range=MONTH_LABELS,
+    width=620,
+    height=180,
+    tools="",
+    toolbar_location=None,
+)
+month_hist_plot.vbar(
+    x="month",
+    top="count",
+    width=0.8,
+    source=month_hist_source,
+    color="#264653",
+    alpha=0.85,
+)
+month_hist_plot.xgrid.grid_line_color = None
+month_hist_plot.y_range.start = 0
+month_hist_plot.y_range.end = 1
+month_hist_plot.xaxis.axis_label = "Month"
+month_hist_plot.yaxis.axis_label = "Count"
+month_hist_plot.add_tools(
+    HoverTool(tooltips=[("month", "@month"), ("count", "@count")])
+)
+
 if USE_INFERENCE:
     controls = column(
         Div(text="<b>Max logit per recordist</b>"),
@@ -1291,7 +1441,8 @@ metadata_panel = column(
     metadata_div,
     width=380,
 )
-layout = row(table_panel, map_plot, metadata_panel, sizing_mode="scale_both")
+map_panel = column(map_plot, month_hist_plot)
+layout = row(table_panel, map_panel, metadata_panel, sizing_mode="scale_both")
 
 curdoc().add_root(layout)
 curdoc().title = (

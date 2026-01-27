@@ -38,8 +38,8 @@ from xyzservices import providers as xyz_providers
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/linaria_cannabina/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/linaria_cannabina/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
@@ -48,7 +48,7 @@ FILTER_ONE_PER_RECORDIST = True
 NUM_ISOCLINES = 8
 FILL_ISOCLINES = True
 HDR_MIN_PROB = 0.1
-HDR_MAX_PROB = 0.8
+HDR_MAX_PROB = 0.7
 
 DATE_FILTER_MODE = "recent"  # "all", "recent", or "exclude_recent"
 DATE_FILTER_YEARS = 11
@@ -61,7 +61,7 @@ BANDWIDTH_METHOD = "knn"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
-BANDWIDTH_KNN_SCALE = 0.42  # Multiplier for the "knn" bandwidth.
+BANDWIDTH_KNN_SCALE = 0.6  # Multiplier for the "knn" bandwidth.
 BANDWIDTH_GRID_SIZE = 20
 BANDWIDTH_CV_FOLDS = 5
 BANDWIDTH_SEARCH_LOG_MIN = -1.0
@@ -73,8 +73,8 @@ AUTO_ZOOM = False
 EUROPE_BOUNDS = {
     "lon_min": -12.0,
     "lon_max": 35.0,
-    "lat_min": 20.0,
-    "lat_max": 78.0,
+    "lat_min": 30.0,
+    "lat_max": 72.0,
 }
 
 PLOT_WIDTH = 1100
@@ -84,6 +84,23 @@ POINT_ALPHA = 0.7
 MAX_ABS_LAT = 85.0
 MIN_POINTS_FOR_KDE = 5
 YEAR_LABEL_LAT = 70.0
+HISTOGRAM_HEIGHT = 220
+HISTOGRAM_BAR_COLOR = "#2a6f9e"
+HISTOGRAM_BAR_ALPHA = 0.85
+MONTH_LABELS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
 
 ANIMATION_WINDOW_MONTHS = 12  # 1-year window per frame.
 ANIMATION_STEP_MONTHS = 1  # Advance one month per frame.
@@ -326,6 +343,71 @@ def prepare_points(df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray, np.ndarr
         lon = lon[valid]
         lat = lat[valid]
     return filtered, lon, lat
+
+
+def extract_date_series(df: pd.DataFrame) -> pd.Series | None:
+    """Extract a parsed datetime series for histogramming."""
+    if "date_dt" in df.columns:
+        return df["date_dt"]
+    if "date" in df.columns:
+        parsed, invalid_count = parse_date_column(df["date"])
+        if invalid_count:
+            print(f"[WARN] {invalid_count} histogram rows have invalid dates.")
+        return parsed
+    return None
+
+
+def compute_monthly_counts(date_series: pd.Series | None) -> list[int]:
+    """Count observations per month, aggregating across years."""
+    if date_series is None or date_series.empty:
+        return [0] * 12
+    month_values = date_series.dropna().dt.month
+    if month_values.empty:
+        return [0] * 12
+    counts = month_values.value_counts().reindex(range(1, 13), fill_value=0)
+    return counts.astype(int).tolist()
+
+
+def build_monthly_histogram_source(df: pd.DataFrame) -> dict[str, list]:
+    """Build a ColumnDataSource payload for the monthly histogram."""
+    date_series = extract_date_series(df)
+    return {
+        "month": MONTH_LABELS,
+        "count": compute_monthly_counts(date_series),
+    }
+
+
+def build_monthly_histogram_plot(
+    source: ColumnDataSource, *, title: str
+) -> figure:
+    """Create the monthly histogram plot."""
+    plot = figure(
+        title=title,
+        x_range=MONTH_LABELS,
+        width=PLOT_WIDTH,
+        height=HISTOGRAM_HEIGHT,
+        tools="",
+        toolbar_location=None,
+    )
+    bars = plot.vbar(
+        x="month",
+        top="count",
+        width=0.9,
+        source=source,
+        fill_color=HISTOGRAM_BAR_COLOR,
+        line_color=HISTOGRAM_BAR_COLOR,
+        fill_alpha=HISTOGRAM_BAR_ALPHA,
+    )
+    plot.y_range.start = 0
+    plot.xgrid.grid_line_color = None
+    plot.yaxis.axis_label = "Count"
+    plot.xaxis.axis_label = "Month"
+    plot.add_tools(
+        HoverTool(
+            renderers=[bars], tooltips=[("Month", "@month"), ("Count", "@count")]
+        )
+    )
+    return plot
 
 
 def standardize_points(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -790,9 +872,14 @@ def plot_map(
         plot.legend.location = "top_left"
         plot.legend.click_policy = "hide"
 
+    histogram_source = ColumnDataSource(build_monthly_histogram_source(points_df))
+    histogram_plot = build_monthly_histogram_plot(
+        histogram_source, title="Monthly density (all years)"
+    )
+
     output_path = output_html or OUTPUT_HTML
     output_file(output_path, title=plot_title)
-    show(plot)
+    show(column(plot, histogram_plot))
 
     print(
         f"[INFO] Rendered {len(lon)} points with bandwidth={bandwidth:.4f} "
@@ -884,6 +971,7 @@ def build_animation_frames(
         points_df, lon, lat = prepare_points(frame_df)
         x_merc, y_merc = project_points(lon, lat, point_transformer)
         point_data = build_point_source_data(points_df, lon, lat, x_merc, y_merc)
+        histogram_data = build_monthly_histogram_source(points_df)
 
         if len(lon) < MIN_POINTS_FOR_KDE:
             isopleth_sources = empty_isopleth_sources(len(probabilities))
@@ -915,6 +1003,7 @@ def build_animation_frames(
             {
                 "points": point_data,
                 "isopleths": isopleth_sources,
+                "histogram": histogram_data,
                 "title": f"Ingroup KDE (Window {frame_label})",
                 "frame_label": f"Window: {frame_label}",
                 "bandwidth_text": bandwidth_text,
@@ -974,6 +1063,11 @@ def plot_animated_map(
         ],
     )
     plot.add_tools(hover)
+
+    histogram_source = ColumnDataSource(first_frame["histogram"])
+    histogram_plot = build_monthly_histogram_plot(
+        histogram_source, title="Monthly density (window)"
+    )
 
     iso_sources: list[ColumnDataSource] = []
     for draw_idx, source_idx in enumerate(render_order):
@@ -1046,6 +1140,7 @@ def plot_animated_map(
             iso_sources=iso_sources,
             render_order=render_order,
             plot=plot,
+            histogram_source=histogram_source,
             frame_div=frame_div,
             bandwidth_div=bandwidth_div,
             year_label=year_label,
@@ -1059,6 +1154,8 @@ def plot_animated_map(
                 iso_sources[i].data = frame.isopleths[source_idx];
                 iso_sources[i].change.emit();
             }
+            histogram_source.data = frame.histogram;
+            histogram_source.change.emit();
             plot.title.text = frame.title;
             frame_div.text = frame.frame_label;
             bandwidth_div.text = frame.bandwidth_text;
@@ -1097,6 +1194,7 @@ def plot_animated_map(
 
     layout = column(
         plot,
+        histogram_plot,
         row(play_button, slider),
         row(frame_div, bandwidth_div),
     )
