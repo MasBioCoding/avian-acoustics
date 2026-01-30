@@ -12,7 +12,7 @@ Typical usage:
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_chloris_chloris.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_carduelis_carduelis.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_linaria_cannabina.yaml
-    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_emberiza_calandra.yaml
+    python xc_scripts/generate_spectrograms_perch.py --config xc_configs_perch/config_emberiza_calandra.yaml --overwrite
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_curruca_communis.yaml
 
 
@@ -88,14 +88,14 @@ def load_config(config_path: Optional[Path] = None) -> dict:
         "spectrograms": {
             "sample_rate": None,  # Keep original sample rate
             "n_fft": 2048,
-            "hop_length": 512,
-            "n_mels": 128,
+            "hop_length": 64,
+            "n_mels": 256,
             "fmin": 0.0,
             "fmax": None,
             "top_db": 80.0,
-            "cmap": "magma",
-            "dpi": 150,
-            "figsize": (6, 3),
+            "cmap": "Greys",
+            "dpi": 300,
+            "figsize": (6,3),
             "image_format": "png",
             "base_url": None,
         },
@@ -143,7 +143,7 @@ class SpectrogramSettings:
     @classmethod
     def from_config(cls, config: dict) -> "SpectrogramSettings":
         settings = config.get("spectrograms", {})
-        figsize = settings.get("figsize", (6, 3))
+        figsize = settings.get("figsize", (6,3))
         if isinstance(figsize, Iterable) and not isinstance(figsize, (str, bytes)):
             try:
                 width, height = float(figsize[0]), float(figsize[1])
@@ -156,13 +156,13 @@ class SpectrogramSettings:
         return cls(
             sample_rate=settings.get("sample_rate"),
             n_fft=int(settings.get("n_fft", 2048)),
-            hop_length=int(settings.get("hop_length", 512)),
-            n_mels=int(settings.get("n_mels", 128)),
+            hop_length=int(settings.get("hop_length", 64)),
+            n_mels=int(settings.get("n_mels", 256)),
             fmin=float(settings.get("fmin", 0.0)),
             fmax=settings.get("fmax"),
             top_db=float(settings.get("top_db", 80.0)),
-            cmap=str(settings.get("cmap", "magma")),
-            dpi=int(settings.get("dpi", 150)),
+            cmap=str(settings.get("cmap", "Greys")),
+            dpi=int(settings.get("dpi", 300)),
             figsize=figsize_tuple,
             image_format=str(settings.get("image_format", "png")).lower(),
         )

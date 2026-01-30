@@ -8,6 +8,8 @@ Run with:
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_chloris_chloris.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_carduelis_carduelis.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_linaria_cannabina.yaml
+    bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_emberiza_calandra.yaml
+    
 """
 
 from __future__ import annotations

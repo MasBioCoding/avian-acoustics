@@ -31,6 +31,14 @@ Config tweaks (config yaml):
     --ingroup-csv "/Users/masjansma/Desktop/temp_edvecs/ingroup_energy_with_meta.csv" \
     --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
     --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/carduelis_carduelis"
+    
+    bokeh serve xc_scripts/ingroup_map_app.py --show --args \
+    --config xc_configs_perch/config_emberiza_calandra.yaml \
+    --ingroup-csv "/Users/masjansma/Desktop/temp_edvecs/ingroup_energy_with_meta.csv" \
+    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
+    --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/emberiza_calandra" \
+    --top-n 3000
+
 
 Inference mode:
     bokeh serve xc_scripts/ingroup_map_app.py --show --args \
@@ -45,6 +53,12 @@ Inference mode:
     --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
     --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/chloris_chloris"
     
+    bokeh serve xc_scripts/ingroup_map_app_inferencecheck.py --show --args \
+    --config xc_configs_perch/config_emberiza_calandra.yaml \
+    --inference-csv "/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv" \
+    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
+    --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/emberiza_calandra"
+    
 """
 
 from __future__ import annotations
@@ -53,6 +67,7 @@ import argparse
 import ast
 import base64
 import html
+import json
 import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -103,6 +118,12 @@ def load_config(config_path: Optional[Path] = None) -> dict[str, Any]:
             "base_url": None,
             "image_format": "png",
             "inline": False,
+        },
+        "audio": {
+            "auto_serve": True,
+            "host": "127.0.0.1",
+            "port": 8765,
+            "base_url": None,
         },
         "map": {
             "auto_zoom": False,
@@ -574,6 +595,61 @@ def build_spectrogram_url(
     return "", False
 
 
+def build_media_url(base_url: Optional[str], species_slug: str, filename: str) -> str:
+    """Construct a media URL, handling base URLs with or without species suffixes."""
+    if not base_url or not filename:
+        return ""
+    normalized = base_url.rstrip("/")
+    suffix = f"/{species_slug}"
+    if normalized.endswith(suffix):
+        return f"{normalized}/{filename}"
+    return f"{normalized}{suffix}/{filename}"
+
+
+def coerce_clip_index(value: Any) -> Optional[int]:
+    """Return clip index as an int when possible."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            return None
+
+
+def build_audio_filename(entry: dict[str, Any], species_slug: str) -> str:
+    """Derive an audio filename from available metadata."""
+    for key in ("clip_file", "file_path", "filepath", "path"):
+        value = entry.get(key)
+        if value:
+            return Path(str(value)).name
+
+    filename_value = entry.get("filename")
+    if filename_value:
+        candidate = Path(str(filename_value)).name
+        if candidate and Path(candidate).suffix.lower() in {
+            ".wav",
+            ".mp3",
+            ".flac",
+            ".ogg",
+            ".m4a",
+        }:
+            return candidate
+
+    xcid = entry.get("xcid")
+    clip_index = coerce_clip_index(entry.get("clip_index"))
+    if xcid and clip_index is not None:
+        return f"{species_slug}_{str(xcid).strip()}_{clip_index:02d}.wav"
+    return ""
+
+
 def build_metadata_html(
     entries: list[dict[str, Any]],
     *,
@@ -581,6 +657,8 @@ def build_metadata_html(
     image_format: str,
     base_url: Optional[str],
     inline: bool,
+    audio_base_url: Optional[str],
+    species_slug: str,
     spectrogram_urls: Optional[list[str]] = None,
 ) -> str:
     """Build HTML for the metadata list, reusing spectrogram URLs if provided."""
@@ -620,6 +698,30 @@ def build_metadata_html(
         if logit_text:
             meta_bits.append(logit_text)
 
+        audio_url = ""
+        if audio_base_url:
+            audio_filename = build_audio_filename(entry, species_slug)
+            if audio_filename:
+                audio_url = build_media_url(
+                    audio_base_url, species_slug, audio_filename
+                )
+        if audio_url:
+            safe_audio = json.dumps(audio_url)
+            play_button = (
+                "<button style='margin-right:6px; padding:2px 6px;' "
+                f"onclick='(function(u){{"
+                "if(!u){return;}"
+                "if(window._ingroup_audio){window._ingroup_audio.pause();}"
+                "window._ingroup_audio=new Audio(u);"
+                "window._ingroup_audio.play();"
+                f"}})({safe_audio})'>Play</button>"
+            )
+        else:
+            play_button = (
+                "<button style='margin-right:6px; padding:2px 6px;' "
+                "disabled title='Audio not available'>Play</button>"
+            )
+
         url = ""
         exists = False
         if spectrogram_urls is not None and idx - 1 < len(spectrogram_urls):
@@ -643,7 +745,10 @@ def build_metadata_html(
 
         rows.append(
             "<div style='margin-bottom: 12px;'>"
-            f"<div style='margin-bottom: 4px;'>{' | '.join(meta_bits)}</div>"
+            "<div style='margin-bottom: 4px; display:flex; align-items:center; "
+            "gap:6px; flex-wrap:wrap;'>"
+            f"{play_button}<div>{' | '.join(meta_bits)}</div>"
+            "</div>"
             f"{img_html}"
             "</div>"
         )
@@ -795,6 +900,16 @@ spectro_cfg = config.get("spectrograms", {}) or {}
 SPECTROGRAM_IMAGE_FORMAT = str(spectro_cfg.get("image_format", "png")).lstrip(".")
 INLINE_SPECTROGRAMS = bool(spectro_cfg.get("inline", False))
 SPECTROGRAM_BASE_URL = spectro_cfg.get("base_url")
+audio_cfg = config.get("audio", {}) or {}
+_audio_base = audio_cfg.get("base_url")
+AUDIO_BASE_URL = (
+    str(_audio_base).rstrip("/")
+    if isinstance(_audio_base, str) and _audio_base
+    else None
+)
+AUDIO_HOST = str(audio_cfg.get("host", "127.0.0.1")).strip() or "127.0.0.1"
+AUDIO_PORT = int(audio_cfg.get("port", 8765))
+AUDIO_AUTO_SERVE_REQUESTED = bool(audio_cfg.get("auto_serve", True))
 map_cfg = config.get("map", {}) or {}
 AUTO_ZOOM = bool(map_cfg.get("auto_zoom", False))
 
@@ -809,6 +924,18 @@ if not SPECTROGRAM_BASE_URL and bool(spectro_cfg.get("auto_serve", True)):
     if generated:
         SPECTROGRAM_BASE_URL = generated[0]
 
+if AUDIO_BASE_URL is None and AUDIO_AUTO_SERVE_REQUESTED:
+    generated_audio_url = start_static_file_server(
+        label=f"Audio ({SPECIES_SLUG})",
+        directory=ROOT_PATH / "clips",
+        host=AUDIO_HOST,
+        port=AUDIO_PORT,
+        log_requests=bool(audio_cfg.get("log_requests", False)),
+    )
+    if generated_audio_url:
+        audio_base, _ = generated_audio_url
+        AUDIO_BASE_URL = audio_base.rstrip("/")
+
 print("Configuration loaded:")
 print(f"  Root: {ROOT_PATH}")
 print(f"  Species slug: {SPECIES_SLUG}")
@@ -818,6 +945,7 @@ else:
     print(f"  Ingroup CSV: {INGROUP_CSV}")
 print(f"  Top-k CSV: {TOPK_CSV}")
 print(f"  Spectrograms: {SPECTROGRAMS_DIR}")
+print(f"  Audio base URL: {AUDIO_BASE_URL}")
 
 if USE_INFERENCE:
     if INFERENCE_CSV is None or not INFERENCE_CSV.exists():
@@ -1048,6 +1176,8 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
         image_format=SPECTROGRAM_IMAGE_FORMAT,
         base_url=SPECTROGRAM_BASE_URL,
         inline=INLINE_SPECTROGRAMS,
+        audio_base_url=AUDIO_BASE_URL,
+        species_slug=SPECIES_SLUG,
         spectrogram_urls=spectrogram_urls,
     )
     status_div.text = (
@@ -1148,6 +1278,8 @@ def update_inference_view() -> None:
         image_format=SPECTROGRAM_IMAGE_FORMAT,
         base_url=SPECTROGRAM_BASE_URL,
         inline=INLINE_SPECTROGRAMS,
+        audio_base_url=AUDIO_BASE_URL,
+        species_slug=SPECIES_SLUG,
         spectrogram_urls=playlist_urls,
     )
 
