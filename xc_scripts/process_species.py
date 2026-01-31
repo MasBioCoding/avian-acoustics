@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Process downloaded bird recordings: detect, clip, and generate embeddings.
+Clipping and embeddings can be skipped to only generate detection tables.
 Uses BirdNET-Analyzer CLI for efficient batch processing.
 BirdNET window overlap is configurable via birdnet.overlap_sec or --overlap
 (default 2.0s) to slide the default 3s detector window by roughly 1 second.
@@ -10,6 +11,10 @@ cd /path/to/birdnet_data_pipeline
 for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 
 Usage:
+
+    python xc_scripts/process_species.py --config xc_configs/config_phylloscopus_collybita.yaml --skip-clipping
+
+
     python xc_scripts/process_species.py --config xc_configs/config_regulus_ignicapilla.yaml
     python xc_scripts/process_species.py --config xc_configs/config_regulus_regulus.yaml
     python xc_scripts/process_species.py --config xc_configs/config_chloris_chloris.yaml
@@ -39,6 +44,8 @@ Usage:
     python xc_scripts/process_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/process_species.py --config xc_configs/config_cettia_cetti.yaml
     python xc_scripts/process_species.py --config xc_configs/config.yaml
+    python xc_scripts/process_species.py --config xc_configs/config.yaml --skip-embeddings
+    python xc_scripts/process_species.py --config xc_configs/config.yaml --skip-clipping
 """
 
 import argparse
@@ -130,13 +137,22 @@ class SpeciesProcessor:
             0.0, min(2.9, float(config.get("birdnet", {}).get("overlap_sec", 2.0)))
         )
         
-    def process(self, skip_confirm: bool = False):
+    def process(
+        self,
+        skip_confirm: bool = False,
+        skip_embeddings: bool = False,
+        skip_clipping: bool = False,
+    ) -> None:
         """Main processing pipeline"""
         print(f"\n{'='*60}")
         print(f"Processing recordings for: {self.species}")
         print(f"Input: {self.download_dir}")
         print(f"Output: {self.clips_dir}")
         print(f"{'='*60}\n")
+
+        if skip_clipping and not skip_embeddings:
+            print("Skipping embeddings because clip creation is disabled.")
+            skip_embeddings = True
         
         # Step 1: Load existing metadata
         metadata_df = self._load_metadata()
@@ -160,7 +176,18 @@ class SpeciesProcessor:
         # Step 4: Process detections and create clips
         print(f"\nFound {self.species} in {len(detections_by_file)} files")
         if not detections_by_file:
+            if skip_clipping:
+                print("No target species detected in any files.")
+                print(f"Detections: {self.detections_dir}")
+                return
             print("No target species detected in any files!")
+            return
+
+        if skip_clipping:
+            print("\nSkipping clip creation; detections only.")
+            if self.delete_originals:
+                print("Keeping original recordings because clipping was skipped.")
+            print(f"Detections: {self.detections_dir}")
             return
             
         print("Creating clips...")
@@ -192,16 +219,20 @@ class SpeciesProcessor:
             f"{len(files_to_delete)} recordings"
         )
         
-        # Step 5: Generate embeddings in batch
-        print("\nGenerating embeddings...")
-        embeddings_csv = self._generate_embeddings_batch()
-        
-        if not embeddings_csv:
-            print("Failed to generate embeddings!")
-            return
-        
-        # Step 6: Create aligned metadata file
-        self._create_aligned_metadata(all_clips, embeddings_csv, metadata_df)
+        # Step 5: Generate embeddings in batch (optional)
+        if skip_embeddings:
+            print("\nSkipping embeddings generation...")
+            self._create_clip_metadata(all_clips, metadata_df)
+        else:
+            print("\nGenerating embeddings...")
+            embeddings_csv = self._generate_embeddings_batch()
+            
+            if not embeddings_csv:
+                print("Failed to generate embeddings!")
+                return
+            
+            # Step 6: Create aligned metadata file
+            self._create_aligned_metadata(all_clips, embeddings_csv, metadata_df)
         
         # Step 7: Delete ALL originals if requested
         if self.delete_originals and audio_files:
@@ -229,7 +260,10 @@ class SpeciesProcessor:
         print(f"\n{'='*60}")
         print("Processing complete!")
         print(f"Clips: {len(all_clips)} files in {self.clips_dir}")
-        print(f"Embeddings: {self.embeddings_dir / 'embeddings.csv'}")
+        if skip_embeddings:
+            print("Embeddings: skipped")
+        else:
+            print(f"Embeddings: {self.embeddings_dir / 'embeddings.csv'}")
         print(f"Metadata: {self.embeddings_dir / 'metadata.csv'}")
         print(f"Detections: {self.detections_dir}")
         print(f"{'='*60}\n")
@@ -599,6 +633,37 @@ class SpeciesProcessor:
         except Exception as e:
             print(f"Failed to run embedding generation: {e}")
             return None
+
+    def _create_clip_metadata(
+        self, clips: List[ClipInfo], original_metadata: pd.DataFrame
+    ) -> None:
+        """Create metadata file aligned with clip creation order."""
+        if not clips:
+            print("No clips available for metadata output.")
+            return
+
+        metadata_rows = []
+        for clip in clips:
+            orig_meta = original_metadata[original_metadata["xcid"] == clip.xcid]
+            if not orig_meta.empty:
+                orig_dict = orig_meta.iloc[0].to_dict()
+            else:
+                orig_dict = {}
+
+            row = {
+                "xcid": clip.xcid,
+                "clip_index": clip.clip_index,
+                "confidence": clip.confidence,
+                "clip_start_s": clip.start_time,
+                "clip_end_s": clip.end_time,
+                **{k: v for k, v in orig_dict.items() if k != "xcid"},
+            }
+            metadata_rows.append(row)
+
+        metadata_df = pd.DataFrame(metadata_rows)
+        metadata_path = self.embeddings_dir / "metadata.csv"
+        metadata_df.to_csv(metadata_path, index=False)
+        print(f"Saved metadata with {len(metadata_df)} entries")
     
     def _create_aligned_metadata(self, clips: List[ClipInfo], 
                                  embeddings_csv: Path, 
@@ -676,6 +741,8 @@ def load_config(config_path: Optional[Path] = None) -> Dict:
             "merge_within_sec": 1.0,
             "delete_originals": True,
             "target_sample_rate_hz": 48000,
+            "skip_embeddings": False,
+            "skip_clipping": False,
         },
         "birdnet": {
             "version": "2.4",
@@ -730,6 +797,16 @@ def main():
     parser.add_argument("--species", type=str, help="Scientific name")
     parser.add_argument("--skip-confirm", action="store_true", 
                        help="Skip confirmation before deleting originals")
+    parser.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="Skip embedding generation (clips and metadata only)",
+    )
+    parser.add_argument(
+        "--skip-clipping",
+        action="store_true",
+        help="Skip clip creation and embeddings; detections only",
+    )
     parser.add_argument("--threads", type=int, help="Number of threads for processing")
     parser.add_argument("--batch-size", type=int, help="Batch size for BirdNET")
     parser.add_argument(
@@ -754,9 +831,20 @@ def main():
     if args.overlap is not None:
         config["birdnet"]["overlap_sec"] = args.overlap
     
+    skip_embeddings = bool(config["processing"].get("skip_embeddings", False))
+    skip_clipping = bool(config["processing"].get("skip_clipping", False))
+    if args.skip_embeddings:
+        skip_embeddings = True
+    if args.skip_clipping:
+        skip_clipping = True
+
     # Run processor
     processor = SpeciesProcessor(config)
-    processor.process(skip_confirm=args.skip_confirm)
+    processor.process(
+        skip_confirm=args.skip_confirm,
+        skip_embeddings=skip_embeddings,
+        skip_clipping=skip_clipping,
+    )
 
 
 if __name__ == "__main__":
