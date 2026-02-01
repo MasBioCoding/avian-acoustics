@@ -13,7 +13,7 @@ Typical usage:
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_carduelis_carduelis.yaml
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_linaria_cannabina.yaml
     python xc_scripts/generate_spectrograms_perch.py --config xc_configs_perch/config_emberiza_calandra.yaml --overwrite
-    python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_curruca_communis.yaml
+    python xc_scripts/generate_spectrograms_perch.py --config xc_configs_perch/config_curruca_communis.yaml
 
 
     python xc_scripts/generate_spectrograms.py --config xc_configs_perch/config_regulus_ignicapilla.yaml

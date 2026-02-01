@@ -16,6 +16,7 @@ python xc_scripts/process_species_perch.py --config xc_configs_perch/config_card
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_linaria_cannabina.yaml --use-existing-detections --skip-embeddings
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_emberiza_calandra.yaml --use-existing-detections --skip-embeddings
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_curruca_communis.yaml --use-existing-detections --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_phylloscopus_collybita.yaml --use-existing-detections --skip-embeddings
 
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_ignicapilla.yaml
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_regulus.yaml

@@ -14,13 +14,16 @@ cd /path/to/birdnet_data_pipeline
 for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 
 Usage:
+    python xc_scripts/download_species.py --config xc_configs_perch/config_phylloscopus_collybita.yaml
+    python xc_scripts/download_species.py --config xc_configs_perch/config_turdus_philomelos.yaml
+
     python xc_scripts/download_species.py --config xc_configs/config_regulus_ignicapilla.yaml
     python xc_scripts/download_species.py --config xc_configs/config_regulus_regulus.yaml
     python xc_scripts/download_species.py --config xc_configs/config_prunella_modularis.yaml
     python xc_scripts/download_species.py --config xc_configs/config_curruca_communis.yaml
     python xc_scripts/download_species.py --config xc_configs/config_acrocephalus_scirpaceus.yaml
     python xc_scripts/download_species.py --config xc_configs/config_phylloscopus_trochilus.yaml
-    python xc_scripts/download_species.py --config xc_configs_perch/config_phylloscopus_collybita.yaml
+
     python xc_scripts/download_species.py --config xc_configs/config_carduelis_carduelis.yaml
     python xc_scripts/download_species.py --config xc_configs/config_linaria_cannabina.yaml
     python xc_scripts/download_species.py --config xc_configs/config_emberiza_calandra.yaml
@@ -308,62 +311,101 @@ class SpeciesDownloader:
             )
         print(f"{'='*60}\n")
 
-        # Track what we've downloaded
-        existing_ids = self._get_existing_ids()
-        all_metadata = []
+        # Track what we've downloaded vs. what already exists on disk
+        initial_existing_files = self._get_existing_file_map()
+        initial_existing_ids = set(initial_existing_files.keys())
+        existing_ids = set(initial_existing_ids)
+        found_existing_ids: Set[str] = set()
+        all_metadata: List[RecordingMetadata] = []
+        metadata_ids: Set[str] = set()
         downloaded_count = 0
+
+        def record_metadata(metadata: RecordingMetadata) -> None:
+            """Add metadata once and track coverage of existing files."""
+            if metadata.xcid in metadata_ids:
+                return
+            all_metadata.append(metadata)
+            metadata_ids.add(metadata.xcid)
+            if metadata.xcid in initial_existing_ids:
+                found_existing_ids.add(metadata.xcid)
 
         # Download foreground recordings
         print("Searching for foreground recordings...")
         for rec in self.crawler.search_foreground(self.species, extra_query):
-            if downloaded_count >= max_recordings:
-                break
-
             metadata = RecordingMetadata.from_xc_record(
                 rec, self.species, is_background=False
             )
 
-            if metadata.xcid in existing_ids:
-                all_metadata.append(metadata)  # Still track metadata
+            if metadata.xcid in metadata_ids:
                 continue
 
-            if self._download_file(metadata):
-                all_metadata.append(metadata)
+            if metadata.xcid in existing_ids:
+                record_metadata(metadata)
+            elif downloaded_count < max_recordings and self._download_file(metadata):
+                record_metadata(metadata)
                 downloaded_count += 1
                 existing_ids.add(metadata.xcid)
 
                 if downloaded_count % 10 == 0:
                     print(f"  Downloaded {downloaded_count}/{max_recordings} recordings...")
 
+            if (
+                downloaded_count >= max_recordings
+                and found_existing_ids == initial_existing_ids
+            ):
+                break
+
         # Download background recordings if requested
-        if include_background and downloaded_count < max_recordings:
+        missing_existing_ids = initial_existing_ids - found_existing_ids
+        if include_background and (downloaded_count < max_recordings or missing_existing_ids):
             print(f"\nSearching for background recordings (where {self.species} is also heard)...")
 
             for rec in self.crawler.search_background(self.species, extra_query):
-                if downloaded_count >= max_recordings:
-                    break
-
                 # For background recordings, the main species is different
                 metadata = RecordingMetadata.from_xc_record(
                     rec, self.species, is_background=True
                 )
 
-                # Skip if we already have this recording
-                if metadata.xcid in existing_ids:
+                if metadata.xcid in metadata_ids:
                     continue
 
-                # Verify our species is actually in the 'also' field
-                also_text = metadata.also if isinstance(metadata.also, str) else str(metadata.also)
-                if not also_text or self.species.lower() not in also_text.lower():
-                    continue
+                is_existing = metadata.xcid in existing_ids
+                if not is_existing:
+                    # Verify our species is actually in the 'also' field
+                    also_text = (
+                        metadata.also if isinstance(metadata.also, str) else str(metadata.also)
+                    )
+                    if not also_text or self.species.lower() not in also_text.lower():
+                        continue
 
-                if self._download_file(metadata):
-                    all_metadata.append(metadata)
+                if is_existing:
+                    record_metadata(metadata)
+                elif downloaded_count < max_recordings and self._download_file(metadata):
+                    record_metadata(metadata)
                     downloaded_count += 1
                     existing_ids.add(metadata.xcid)
 
                     if downloaded_count % 10 == 0:
                         print(f"  Downloaded {downloaded_count}/{max_recordings} recordings...")
+
+                if (
+                    downloaded_count >= max_recordings
+                    and found_existing_ids == initial_existing_ids
+                ):
+                    break
+
+        # Report any existing files missing metadata
+        missing_existing_ids = initial_existing_ids - found_existing_ids
+        if missing_existing_ids:
+            print("\nWarning: metadata not found for existing files:")
+            for xcid in sorted(missing_existing_ids):
+                filepath = initial_existing_files.get(xcid)
+                if filepath:
+                    print(f"  - {filepath} (XC{xcid})")
+                else:
+                    print(f"  - XC{xcid}")
+        else:
+            print("\nAll existing files have metadata.")
 
         # Save metadata
         self._save_metadata(all_metadata)
@@ -405,6 +447,19 @@ class SpeciesDownloader:
                 if len(parts) >= 2:
                     xcid = parts[-1]
                     existing.add(xcid)
+
+        return existing
+
+    def _get_existing_file_map(self) -> Dict[str, Path]:
+        """Map XC IDs to existing downloaded file paths."""
+        existing: Dict[str, Path] = {}
+
+        for ext in ['.mp3', '.wav', '.ogg', '.m4a']:
+            for f in self.download_dir.glob(f"*{ext}"):
+                parts = f.stem.split('_')
+                if len(parts) >= 2:
+                    xcid = parts[-1]
+                    existing.setdefault(xcid, f)
 
         return existing
 
