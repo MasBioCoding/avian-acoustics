@@ -16,6 +16,7 @@ for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 Usage:
     python xc_scripts/download_species.py --config xc_configs_perch/config_phylloscopus_collybita.yaml
     python xc_scripts/download_species.py --config xc_configs_perch/config_turdus_philomelos.yaml
+    python xc_scripts/download_species.py --config xc_configs_perch/config_prunella_modularis.yaml
 
     python xc_scripts/download_species.py --config xc_configs/config_regulus_ignicapilla.yaml
     python xc_scripts/download_species.py --config xc_configs/config_regulus_regulus.yaml

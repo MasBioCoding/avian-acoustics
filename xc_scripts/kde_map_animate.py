@@ -51,8 +51,8 @@ from xyzservices import providers as xyz_providers
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 

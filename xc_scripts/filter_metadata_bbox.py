@@ -29,6 +29,14 @@ Usage:
         --config "xc_configs_perch/config_emberiza_calandra.yaml" \
         --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/emberiza_calandra"
         
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv" \
+        --config "xc_configs_perch/config_phylloscopus_collybita.yaml" \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/phylloscopus_collybita"
+        
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/metadata.csv" \
+        --config "xc_configs_perch/config_prunella_modularis.yaml" \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/prunella_modularis"
+        
         
         
         
