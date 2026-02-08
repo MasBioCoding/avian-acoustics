@@ -52,6 +52,13 @@ Config tweaks (config yaml):
     --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
     --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/phylloscopus_collybita" \
     --top-n 3000
+    
+    bokeh serve xc_scripts/ingroup_map_app.py --show --args \
+    --config xc_configs_perch/config_prunella_modularis.yaml \
+    --ingroup-csv "/Users/masjansma/Desktop/temp_edvecs/ingroup_energy_with_meta.csv" \
+    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
+    --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/prunella_modularis" \
+    --top-n 3000
 
 
 Inference mode:
@@ -1270,8 +1277,6 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
         f"<b>Ingroup {html.escape(source_id)}</b>: {len(entries)} entries"
     )
     update_month_histogram(dates, label=f"ingroup {source_id}")
-    if AUTO_ZOOM:
-        update_map_range(map_plot, x_vals, y_vals)
 
 
 def on_table_selection(attr: str, old: list[int], new: list[int]) -> None:
