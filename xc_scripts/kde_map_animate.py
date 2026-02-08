@@ -51,8 +51,8 @@ from xyzservices import providers as xyz_providers
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
@@ -63,8 +63,13 @@ FILL_ISOCLINES = True
 HDR_MIN_PROB = 0.1
 HDR_MAX_PROB = 0.8
 
-DATE_FILTER_MODE = "all"  # "all", "recent", or "exclude_recent"
-DATE_FILTER_YEARS = 11
+DATE_FILTER_MODE = (
+    "range"  # "all", "recent", "exclude_recent", or "range"
+)
+DATE_FILTER_YEARS = 3
+DATE_RANGE_START = "2014-01-01"  # Used when mode="range".
+DATE_RANGE_END = "2022-06-01"  # Used when mode="range".
+# Examples: "2014", "2014-01", "2014-01-01"
 DATE_PARSE_FORMAT = "%m/%d/%Y"
 DATE_PARSE_DAYFIRST = False
 DATE_PARSE_FALLBACK = True
@@ -74,7 +79,7 @@ BANDWIDTH_METHOD = "knn"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
-BANDWIDTH_KNN_SCALE = 0.7  # Multiplier for the "knn" bandwidth.
+BANDWIDTH_KNN_SCALE = 0.3  # Multiplier for the "knn" bandwidth.
 BANDWIDTH_GRID_SIZE = 20
 BANDWIDTH_CV_FOLDS = 5
 BANDWIDTH_SEARCH_LOG_MIN = -1.0
@@ -246,6 +251,53 @@ def parse_date_column(series: pd.Series) -> tuple[pd.Series, int]:
     return parsed, int(invalid.sum())
 
 
+def parse_date_range_endpoint(
+    value: object, *, is_end: bool
+) -> tuple[pd.Timestamp | None, bool]:
+    """Parse a range endpoint and flag whether a time component was provided."""
+    if value is None:
+        return None, False
+    try:
+        if pd.isna(value):
+            return None, False
+    except TypeError:
+        pass
+
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "nan"}:
+        return None, False
+
+    if re.fullmatch(r"\d{4}", text):
+        year = int(text)
+        if is_end:
+            return pd.Timestamp(year=year, month=12, day=31), False
+        return pd.Timestamp(year=year, month=1, day=1), False
+
+    if re.fullmatch(r"\d{4}-\d{2}", text):
+        parsed = pd.to_datetime(f"{text}-01", errors="coerce")
+        if pd.isna(parsed):
+            return None, False
+        if is_end:
+            parsed = parsed + pd.offsets.MonthEnd(0)
+        return pd.Timestamp(parsed), False
+
+    parsed = pd.to_datetime(text, errors="coerce", dayfirst=DATE_PARSE_DAYFIRST)
+    if pd.isna(parsed):
+        return None, False
+
+    has_time = bool(re.search(r"\d{2}:\d{2}", text)) or "T" in text
+    return pd.Timestamp(parsed), has_time
+
+
+def format_timestamp(value: pd.Timestamp) -> str:
+    """Format timestamps with time if present."""
+    if value is pd.NaT:
+        return "NaT"
+    if value.hour or value.minute or value.second or value.microsecond:
+        return value.isoformat(sep=" ")
+    return str(value.date())
+
+
 def prepare_inference_table(path: Path) -> pd.DataFrame:
     """Load inference.csv and extract xcid/clip_index from filenames."""
     df = read_csv(path)
@@ -319,16 +371,14 @@ def merge_inference_metadata(
 
 
 def apply_date_filter(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter rows based on DATE_FILTER_MODE relative to the latest date."""
+    """Filter rows based on DATE_FILTER_MODE settings."""
     mode = DATE_FILTER_MODE.strip().lower()
     if mode == "all":
         return df
-    if mode not in {"recent", "exclude_recent"}:
+    if mode not in {"recent", "exclude_recent", "range"}:
         raise SystemExit(
-            "DATE_FILTER_MODE must be 'all', 'recent', or 'exclude_recent'."
+            "DATE_FILTER_MODE must be 'all', 'recent', 'exclude_recent', or 'range'."
         )
-    if DATE_FILTER_YEARS <= 0:
-        raise SystemExit("DATE_FILTER_YEARS must be > 0.")
 
     if "date_dt" in df.columns:
         date_series = df["date_dt"]
@@ -345,13 +395,39 @@ def apply_date_filter(df: pd.DataFrame) -> pd.DataFrame:
         print("[WARN] No valid dates; skipping date filter.")
         return df
 
-    reference_date = date_series.max()
-    cutoff = reference_date - pd.DateOffset(years=DATE_FILTER_YEARS)
+    if mode in {"recent", "exclude_recent"}:
+        if DATE_FILTER_YEARS <= 0:
+            raise SystemExit("DATE_FILTER_YEARS must be > 0.")
+        reference_date = date_series.max()
+        cutoff = reference_date - pd.DateOffset(years=DATE_FILTER_YEARS)
 
-    if mode == "recent":
-        mask = date_series >= cutoff
+        if mode == "recent":
+            mask = date_series >= cutoff
+        else:
+            mask = date_series < cutoff
     else:
-        mask = date_series < cutoff
+        start, start_has_time = parse_date_range_endpoint(
+            DATE_RANGE_START, is_end=False
+        )
+        end, end_has_time = parse_date_range_endpoint(
+            DATE_RANGE_END, is_end=True
+        )
+        if start is None and end is None:
+            raise SystemExit(
+                "DATE_RANGE_START or DATE_RANGE_END must be set when "
+                "DATE_FILTER_MODE='range'."
+            )
+        if start is not None and end is not None and end < start:
+            raise SystemExit("DATE_RANGE_END must be >= DATE_RANGE_START.")
+
+        mask = pd.Series(True, index=df.index)
+        if start is not None:
+            mask &= date_series >= start
+        if end is not None:
+            if end_has_time:
+                mask &= date_series <= end
+            else:
+                mask &= date_series < (end + pd.Timedelta(days=1))
 
     filtered = df.loc[mask].copy()
     dropped_invalid = date_series.isna().sum()
@@ -359,10 +435,36 @@ def apply_date_filter(df: pd.DataFrame) -> pd.DataFrame:
         print(
             f"[WARN] Dropped {dropped_invalid} rows without valid dates for filtering."
         )
-    print(
-        f"[INFO] Date filter '{mode}' kept {len(filtered)} of {len(df)} rows "
-        f"(cutoff={cutoff.date()}, reference={reference_date.date()})."
-    )
+    if mode in {"recent", "exclude_recent"}:
+        print(
+            f"[INFO] Date filter '{mode}' kept {len(filtered)} of {len(df)} rows "
+            f"(cutoff={cutoff.date()}, reference={reference_date.date()})."
+        )
+    else:
+        range_bits: list[str] = []
+        if start is not None:
+            label = (
+                format_timestamp(start) if start_has_time else str(start.date())
+            )
+            range_bits.append(f"start={label}")
+        if end is not None:
+            label = format_timestamp(end) if end_has_time else str(end.date())
+            range_bits.append(f"end={label}")
+        range_text = ", ".join(range_bits) if range_bits else "no range"
+        print(
+            f"[INFO] Date filter 'range' kept {len(filtered)} of {len(df)} rows "
+            f"({range_text})."
+        )
+        filtered_dates = date_series[mask].dropna()
+        if filtered_dates.empty:
+            print("[WARN] Date filter 'range' left no valid dates.")
+        else:
+            earliest = filtered_dates.min()
+            latest = filtered_dates.max()
+            print(
+                f"[INFO] Date span in range: {format_timestamp(earliest)} "
+                f"to {format_timestamp(latest)}."
+            )
     return filtered
 
 

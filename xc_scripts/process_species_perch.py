@@ -19,6 +19,8 @@ python xc_scripts/process_species_perch.py --config xc_configs_perch/config_curr
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_phylloscopus_collybita.yaml --use-existing-detections --skip-embeddings
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_prunella_modularis.yaml --use-existing-detections --skip-embeddings
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_limosa_limosa.yaml --use-existing-detections --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_phylloscopus_trochilus.yaml --skip-embeddings
+
 
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_ignicapilla.yaml
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_regulus.yaml

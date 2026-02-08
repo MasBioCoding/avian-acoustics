@@ -13,6 +13,7 @@ for me: /Users/masjansma/Desktop/birdnetcluster1folder/birdnet_data_pipeline
 Usage:
 
     python xc_scripts/process_species.py --config xc_configs/config_phylloscopus_collybita.yaml --skip-clipping
+    python xc_scripts/process_species.py --config xc_configs_perch/config_phylloscopus_trochilus.yaml --skip-clipping
 
 
     python xc_scripts/process_species.py --config xc_configs/config_regulus_ignicapilla.yaml

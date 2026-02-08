@@ -37,6 +37,10 @@ Usage:
         --config "xc_configs_perch/config_prunella_modularis.yaml" \
         --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/prunella_modularis"
         
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_trochilus/metadata.csv" \
+        --config "xc_configs_perch/config_phylloscopus_trochilus.yaml" \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/phylloscopus_trochilus"
+        
         
         
         
