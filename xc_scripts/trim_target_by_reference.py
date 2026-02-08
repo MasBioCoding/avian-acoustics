@@ -8,9 +8,9 @@ of how many rows were removed.
 
 Usage:
     python xc_scripts/trim_target_by_reference.py \
-        --target "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/emberiza_calandra/song/inference.csv" \
-        --reference "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/emberiza_calandra/south_song/inference.csv" \
-        --output "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/emberiza_calandra/song_no_south/inference_trimmed.csv"
+        --target "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/phylloscopus_collybita/song_down/inference.csv" \
+        --reference "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/phylloscopus_collybita/song_updown/inference.csv" \
+        --output "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/phylloscopus_collybita/song_no_updown/inference.csv"
 
     python xc_scripts/trim_target_by_reference.py \
         --target /path/to/target.csv \

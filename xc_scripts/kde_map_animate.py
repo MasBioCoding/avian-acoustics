@@ -58,17 +58,17 @@ ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
 FILTER_ONE_PER_RECORDIST = True
 
-NUM_ISOCLINES = 6
+NUM_ISOCLINES = 4
 FILL_ISOCLINES = True
 HDR_MIN_PROB = 0.1
-HDR_MAX_PROB = 0.8
+HDR_MAX_PROB = 0.7
 
 DATE_FILTER_MODE = (
     "range"  # "all", "recent", "exclude_recent", or "range"
 )
 DATE_FILTER_YEARS = 3
 DATE_RANGE_START = "2014-01-01"  # Used when mode="range".
-DATE_RANGE_END = "2022-06-01"  # Used when mode="range".
+DATE_RANGE_END = "2026-11-12"  # Used when mode="range".
 # Examples: "2014", "2014-01", "2014-01-01"
 DATE_PARSE_FORMAT = "%m/%d/%Y"
 DATE_PARSE_DAYFIRST = False
@@ -79,7 +79,7 @@ BANDWIDTH_METHOD = "knn"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
-BANDWIDTH_KNN_SCALE = 0.3  # Multiplier for the "knn" bandwidth.
+BANDWIDTH_KNN_SCALE = 0.2  # Multiplier for the "knn" bandwidth.
 BANDWIDTH_GRID_SIZE = 20
 BANDWIDTH_CV_FOLDS = 5
 BANDWIDTH_SEARCH_LOG_MIN = -1.0
@@ -97,11 +97,32 @@ EUROPE_BOUNDS = {
 
 PLOT_WIDTH = 1500
 PLOT_HEIGHT = 1000
-POINT_SIZE =8
+PLAYLIST_WIDTH = 860
+POINT_SIZE = 8
 POINT_ALPHA = 0.7
 MAX_ABS_LAT = 85.0
 MIN_POINTS_FOR_KDE = 5
 YEAR_LABEL_LAT = 70.0
+
+MONTH_LABELS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
+HISTOGRAM_HEIGHT = 240
+HISTOGRAM_BAR_COLOR = "#3b6ea5"
+HISTOGRAM_ALPHA = 0.85
+HISTOGRAM_Y_PADDING = 1.1
+YEARLY_HEIGHT = 190
 
 ANIMATION_WINDOW_MONTHS = 12  # 1-year window per frame.
 ANIMATION_STEP_MONTHS = 1  # Advance one month per frame.
@@ -1379,8 +1400,38 @@ def build_static_interactive_layout(
         disabled=not slider_enabled,
     )
 
+    if "date_dt" in points_df.columns:
+        date_series = points_df["date_dt"]
+    elif "date" in points_df.columns:
+        date_series = points_df["date"]
+    else:
+        date_series = pd.Series([pd.NaT] * len(points_df))
+
+    def build_histogram_data(mask: np.ndarray) -> dict[str, list]:
+        counts = compute_monthly_histogram(date_series[mask])
+        return {"month": MONTH_LABELS, "count": counts.astype(int).tolist()}
+
+    hist_max = int(compute_monthly_histogram(date_series).max())
+    hist_max = max(hist_max, 1)
+
+    yearly_all = compute_yearly_histogram(date_series)
+    if yearly_all.empty:
+        year_labels = ["n/a"]
+        year_max = 1
+    else:
+        year_labels = [str(year) for year in yearly_all.index]
+        year_max = max(int(yearly_all.max()), 1)
+
+    def build_yearly_data(mask: np.ndarray) -> dict[str, list]:
+        if year_labels == ["n/a"]:
+            return {"year": year_labels, "count": [0]}
+        counts = compute_yearly_histogram(date_series[mask])
+        count_map = {int(year): int(count) for year, count in counts.items()}
+        values = [int(count_map.get(int(year), 0)) for year in year_labels]
+        return {"year": year_labels, "count": values}
+
     playlist_title = Div(text="<b>Playlist</b>")
-    playlist_div = Div(text="<i>No rendered points.</i>", width=860)
+    playlist_div = Div(text="<i>No rendered points.</i>", width=PLAYLIST_WIDTH)
 
     point_source = ColumnDataSource(base_data)
     point_renderer = plot.scatter(
@@ -1430,6 +1481,58 @@ def build_static_interactive_layout(
         min_val, max_val = logit_slider.value
         finite = np.isfinite(point_logits)
         return finite & (point_logits >= min_val) & (point_logits <= max_val)
+
+    hist_source = ColumnDataSource(build_histogram_data(build_logit_mask()))
+    hist_plot = figure(
+        title="Monthly observation counts",
+        x_range=MONTH_LABELS,
+        y_range=(0, hist_max * HISTOGRAM_Y_PADDING),
+        width=PLOT_WIDTH,
+        height=HISTOGRAM_HEIGHT,
+        tools="",
+        toolbar_location=None,
+    )
+    hist_plot.vbar(
+        x="month",
+        top="count",
+        width=0.9,
+        source=hist_source,
+        color=HISTOGRAM_BAR_COLOR,
+        alpha=HISTOGRAM_ALPHA,
+    )
+    hist_plot.xgrid.grid_line_color = None
+    hist_plot.yaxis.axis_label = "Observations"
+    hist_plot.xaxis.axis_label = "Month"
+
+    year_source = ColumnDataSource(build_yearly_data(build_logit_mask()))
+    year_plot = figure(
+        title="Yearly sample size",
+        x_range=year_labels,
+        y_range=(0, year_max * HISTOGRAM_Y_PADDING),
+        width=int((PLOT_WIDTH + PLAYLIST_WIDTH) / 3),
+        height=YEARLY_HEIGHT,
+        tools="",
+        toolbar_location=None,
+    )
+    year_plot.line(
+        x="year",
+        y="count",
+        source=year_source,
+        line_color=HISTOGRAM_BAR_COLOR,
+        line_width=2,
+        alpha=HISTOGRAM_ALPHA,
+    )
+    year_plot.circle(
+        x="year",
+        y="count",
+        source=year_source,
+        size=6,
+        color=HISTOGRAM_BAR_COLOR,
+        alpha=HISTOGRAM_ALPHA,
+    )
+    year_plot.xgrid.grid_line_color = None
+    year_plot.yaxis.axis_label = "Observations"
+    year_plot.xaxis.axis_label = "Year"
 
     def update_points(*, update_playlist: bool = True) -> np.ndarray:
         mask = build_logit_mask()
@@ -1539,6 +1642,8 @@ def build_static_interactive_layout(
         for draw_idx, source_idx in enumerate(render_order):
             iso_sources[draw_idx].data = updated_data[source_idx]
         bandwidth_div.text = format_bandwidth_text(updated_bw)
+        hist_source.data = build_histogram_data(mask)
+        year_source.data = build_yearly_data(mask)
         if np.isfinite(updated_bw):
             status_div.text = (
                 f"Updated KDE with scale {scale_value:.3f} "
@@ -1556,9 +1661,10 @@ def build_static_interactive_layout(
         row(logit_slider, count_div),
         status_div,
     )
-    map_panel = column(plot, controls)
-    playlist_panel = column(playlist_title, playlist_div, width=860)
-    return row(map_panel, playlist_panel), point_source, playlist_div
+    map_panel = column(plot, hist_plot, controls)
+    playlist_panel = column(playlist_title, playlist_div, width=PLAYLIST_WIDTH)
+    layout = column(row(map_panel, playlist_panel), year_plot)
+    return layout, point_source, playlist_div
 
 
 def prepare_base_dataframe() -> pd.DataFrame:
@@ -1625,6 +1731,33 @@ def format_frame_label(start: pd.Timestamp, end: pd.Timestamp) -> str:
     return f"{start.strftime('%Y-%m')} to {end_label}"
 
 
+def compute_monthly_histogram(date_series: pd.Series) -> np.ndarray:
+    """Return counts per calendar month, aggregating across years."""
+    if date_series.empty:
+        return np.zeros(12, dtype=int)
+    parsed = pd.to_datetime(
+        date_series, errors="coerce", dayfirst=DATE_PARSE_DAYFIRST
+    )
+    months = parsed.dropna().dt.month.astype(int)
+    if months.empty:
+        return np.zeros(12, dtype=int)
+    counts = np.bincount(months, minlength=13)[1:13]
+    return counts
+
+
+def compute_yearly_histogram(date_series: pd.Series) -> pd.Series:
+    """Return counts per year for the provided dates."""
+    if date_series.empty:
+        return pd.Series(dtype=int)
+    parsed = pd.to_datetime(
+        date_series, errors="coerce", dayfirst=DATE_PARSE_DAYFIRST
+    )
+    years = parsed.dropna().dt.year.astype(int)
+    if years.empty:
+        return pd.Series(dtype=int)
+    return years.value_counts().sort_index()
+
+
 def build_animation_frames(
     df: pd.DataFrame,
     windows: Sequence[tuple[pd.Timestamp, pd.Timestamp]],
@@ -1633,7 +1766,7 @@ def build_animation_frames(
     equal_area: Transformer,
     contour_transformer: Transformer,
 ) -> list[dict[str, object]]:
-    """Compute per-frame KDEs and sources for the animation."""
+    """Compute per-frame KDEs, sources, and monthly histograms."""
     date_series = df["date_dt"]
     frames: list[dict[str, object]] = []
 
@@ -1644,6 +1777,16 @@ def build_animation_frames(
         points_df, lon, lat = prepare_points(frame_df)
         x_merc, y_merc = project_points(lon, lat, point_transformer)
         point_data = build_point_source_data(points_df, lon, lat, x_merc, y_merc)
+        month_counts = (
+            compute_monthly_histogram(points_df["date_dt"])
+            if "date_dt" in points_df.columns
+            else np.zeros(12, dtype=int)
+        )
+        histogram = {
+            "month": MONTH_LABELS,
+            "count": month_counts.astype(int).tolist(),
+        }
+        hist_max = int(month_counts.max()) if month_counts.size else 0
 
         if len(lon) < MIN_POINTS_FOR_KDE:
             isopleth_sources = empty_isopleth_sources(len(probabilities))
@@ -1674,6 +1817,8 @@ def build_animation_frames(
                 "frame_label": f"Window: {frame_label}",
                 "bandwidth_text": bandwidth_text,
                 "year_text": f"{start.year}",
+                "histogram": histogram,
+                "hist_max": hist_max,
             }
         )
 
@@ -1687,13 +1832,18 @@ def plot_animated_map(
     y_range: Range1d,
     output_html: Path,
 ) -> None:
-    """Render an animated KDE map with a month-by-month slider."""
+    """Render an animated KDE map with a slider and monthly histogram."""
     if not frames:
         raise SystemExit("No animation frames to render.")
 
     first_frame = frames[0]
     palette = build_heat_palette(len(probabilities))
     render_order = list(range(len(probabilities) - 1, -1, -1))
+    hist_max = max(
+        (max(frame["histogram"]["count"]) for frame in frames),
+        default=0,
+    )
+    hist_max = max(hist_max, 1)
 
     plot = figure(
         title=first_frame["title"],
@@ -1790,6 +1940,27 @@ def plot_animated_map(
         background_fill_alpha=0.7,
     )
     plot.add_layout(year_label)
+    hist_source = ColumnDataSource(first_frame["histogram"])
+    hist_plot = figure(
+        title="Monthly observation counts",
+        x_range=MONTH_LABELS,
+        y_range=(0, hist_max * HISTOGRAM_Y_PADDING),
+        width=PLOT_WIDTH,
+        height=HISTOGRAM_HEIGHT,
+        tools="",
+        toolbar_location=None,
+    )
+    hist_plot.vbar(
+        x="month",
+        top="count",
+        width=0.9,
+        source=hist_source,
+        color=HISTOGRAM_BAR_COLOR,
+        alpha=HISTOGRAM_ALPHA,
+    )
+    hist_plot.xgrid.grid_line_color = None
+    hist_plot.yaxis.axis_label = "Observations"
+    hist_plot.xaxis.axis_label = "Month"
     slider = Slider(
         start=0, end=len(frames) - 1, value=0, step=1, title="Frame"
     )
@@ -1804,6 +1975,7 @@ def plot_animated_map(
             frame_div=frame_div,
             bandwidth_div=bandwidth_div,
             year_label=year_label,
+            hist_source=hist_source,
         ),
         code="""
             const frame = frames[cb_obj.value];
@@ -1818,6 +1990,8 @@ def plot_animated_map(
             frame_div.text = frame.frame_label;
             bandwidth_div.text = frame.bandwidth_text;
             year_label.text = frame.year_text;
+            hist_source.data = frame.histogram;
+            hist_source.change.emit();
         """,
     )
     slider.js_on_change("value", slider_callback)
@@ -1852,6 +2026,7 @@ def plot_animated_map(
 
     layout = column(
         plot,
+        hist_plot,
         row(play_button, slider),
         row(frame_div, bandwidth_div),
     )
