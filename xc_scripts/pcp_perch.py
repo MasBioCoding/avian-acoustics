@@ -104,10 +104,56 @@ DEFAULT_PCP_ALPHA = 0.75
 DEFAULT_PCP_LINE_WIDTH = 1.2
 DEFAULT_HDBSCAN_MIN_CLUSTER_SIZE = 15
 DEFAULT_HDBSCAN_MIN_SAMPLES = 5
+HDBSCAN_AUX_GEO_IDX = 0
+HDBSCAN_AUX_DATE_IDX = 1
+HDBSCAN_AUX_TIME_IDX = 2
+HDBSCAN_YEAR_HIST_BINS = 36
+HDBSCAN_DAY_HIST_BINS = 24
+EARTH_WEB_MERCATOR_RADIUS = 6_378_137.0
+WEB_MERCATOR_MAX_LAT = 85.05112878
+MONTH_OFFSETS = np.array(
+    [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334], dtype=float
+)
+MONTH_MAX_DAYS = np.array(
+    [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=float
+)
+YEAR_CYCLE_MONTH_TICKS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+YEAR_CYCLE_MONTH_LABELS = {
+    0: "Jan",
+    31: "Feb",
+    59: "Mar",
+    90: "Apr",
+    120: "May",
+    151: "Jun",
+    181: "Jul",
+    212: "Aug",
+    243: "Sep",
+    273: "Oct",
+    304: "Nov",
+    334: "Dec",
+}
 DEFAULT_SPECTROGRAM_IMAGE_FORMAT = "png"
 DIMENSION_STRIP_HEIGHT = 150
 DIMENSION_STRIP_MIN_ALPHA = 0.85
 _STATIC_HTTP_SERVERS: dict[str, dict[str, Any]] = {}
+DATE_COLUMN_CANDIDATES = (
+    "date",
+    "recording_date",
+    "event_date",
+    "obs_date",
+    "recording_datetime",
+    "datetime",
+)
+TIME_COLUMN_CANDIDATES = (
+    "time",
+    "recording_time",
+    "event_time",
+    "obs_time",
+    "hour",
+    "recording_datetime",
+    "datetime",
+)
+TIME_OF_DAY_PATTERN = re.compile(r"(\d{1,2})[:h](\d{1,2})(?:[:m](\d{1,2}))?")
 
 
 def load_config(config_path: Path | None) -> dict[str, Any]:
@@ -771,6 +817,24 @@ def format_pcp_group_description(
             f"- min_cluster_size: {hdbscan_params.get('min_cluster_size', 'n/a')}"
         )
         lines.append(f"- min_samples: {hdbscan_params.get('min_samples', 'n/a')}")
+        include_aux = bool(hdbscan_params.get("include_geo_date_time", False))
+        lines.append(
+            "- include_geo_date_time: "
+            f"{'yes' if include_aux else 'no'}"
+        )
+        if include_aux:
+            lines.append(
+                "- include_lat_lon: "
+                f"{'yes' if hdbscan_params.get('include_lat_lon') else 'no'}"
+            )
+            lines.append(
+                "- include_date: "
+                f"{'yes' if hdbscan_params.get('include_date') else 'no'}"
+            )
+            lines.append(
+                "- include_time: "
+                f"{'yes' if hdbscan_params.get('include_time') else 'no'}"
+            )
     else:
         lines.append("- not run yet")
     return "\n".join(lines).strip() + "\n"
@@ -1066,6 +1130,25 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         value=DEFAULT_HDBSCAN_MIN_SAMPLES,
         width=120,
     )
+    hdbscan_include_aux_checkbox = CheckboxGroup(
+        labels=["Include geo+date+time in HDBSCAN"],
+        active=[],
+        width=240,
+    )
+    hdbscan_aux_dimensions_checkbox = CheckboxGroup(
+        labels=[
+            "Lat/Lon",
+            "Date (yearly cycle)",
+            "Time (daily cycle)",
+        ],
+        active=[
+            HDBSCAN_AUX_GEO_IDX,
+            HDBSCAN_AUX_DATE_IDX,
+            HDBSCAN_AUX_TIME_IDX,
+        ],
+        width=240,
+        disabled=True,
+    )
     hdbscan_compute_button = Button(label="Compute", button_type="primary", width=100)
     hdbscan_save_button = Button(
         label="Save HDBSCAN groups",
@@ -1109,6 +1192,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         ),
         hdbscan_min_cluster_size_spinner,
         hdbscan_min_samples_spinner,
+        hdbscan_include_aux_checkbox,
+        hdbscan_aux_dimensions_checkbox,
         hdbscan_compute_button,
         hdbscan_status_box,
         energy_distance_button,
@@ -1544,6 +1629,187 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "background-color": "#fffaf2",
         },
     )
+    hdbscan_year_hist_source = ColumnDataSource(
+        data={
+            "left": [],
+            "right": [],
+            "top": [],
+            "color": [],
+            "alpha": [],
+            "label": [],
+        }
+    )
+    hdbscan_day_hist_source = ColumnDataSource(
+        data={
+            "left": [],
+            "right": [],
+            "top": [],
+            "color": [],
+            "alpha": [],
+            "label": [],
+        }
+    )
+    hdbscan_map_source = ColumnDataSource(
+        data={
+            "x": [],
+            "y": [],
+            "color": [],
+            "alpha": [],
+            "label": [],
+        }
+    )
+    year_cycle_plot = figure(
+        height=220,
+        width=360,
+        toolbar_location="above",
+        tools="pan,wheel_zoom,reset",
+        x_range=Range1d(0, 365),
+        background_fill_color="#f7f4ed",
+        title="Year cycle",
+    )
+    year_cycle_plot.quad(
+        left="left",
+        right="right",
+        bottom=0,
+        top="top",
+        fill_color="color",
+        line_color="color",
+        fill_alpha="alpha",
+        line_alpha="alpha",
+        source=hdbscan_year_hist_source,
+    )
+    year_cycle_plot.xaxis.axis_label = "Day of year (cyclic)"
+    year_cycle_plot.yaxis.axis_label = "Count"
+    year_cycle_plot.xaxis.ticker = YEAR_CYCLE_MONTH_TICKS
+    year_cycle_plot.xaxis.major_label_overrides = YEAR_CYCLE_MONTH_LABELS
+    year_cycle_plot.toolbar.autohide = True
+
+    day_cycle_plot = figure(
+        height=220,
+        width=360,
+        toolbar_location="above",
+        tools="pan,wheel_zoom,reset",
+        x_range=Range1d(0, 24),
+        background_fill_color="#f7f4ed",
+        title="Day cycle",
+    )
+    day_cycle_plot.quad(
+        left="left",
+        right="right",
+        bottom=0,
+        top="top",
+        fill_color="color",
+        line_color="color",
+        fill_alpha="alpha",
+        line_alpha="alpha",
+        source=hdbscan_day_hist_source,
+    )
+    day_cycle_plot.xaxis.axis_label = "Hour of day (cyclic)"
+    day_cycle_plot.yaxis.axis_label = "Count"
+    day_cycle_plot.xaxis.ticker = [0, 3, 6, 9, 12, 15, 18, 21, 24]
+    day_cycle_plot.toolbar.autohide = True
+
+    mercator_plot = figure(
+        height=220,
+        width=430,
+        toolbar_location="above",
+        tools="pan,wheel_zoom,reset",
+        x_axis_type="mercator",
+        y_axis_type="mercator",
+        x_range=Range1d(-20_037_508, 20_037_508),
+        y_range=Range1d(-20_037_508, 20_037_508),
+        background_fill_color="#f7f4ed",
+        title="Geographic (Web Mercator)",
+    )
+    mercator_plot.scatter(
+        x="x",
+        y="y",
+        size=6,
+        fill_color="color",
+        line_color="color",
+        fill_alpha="alpha",
+        line_alpha="alpha",
+        source=hdbscan_map_source,
+    )
+    mercator_plot.xaxis.axis_label = "Longitude (Web Mercator)"
+    mercator_plot.yaxis.axis_label = "Latitude (Web Mercator)"
+    mercator_plot.toolbar.autohide = True
+
+    hdbscan_context_status_box = Div(
+        text="<em>Compute HDBSCAN to populate cycle and map diagnostics.</em>",
+        render_as_text=False,
+        styles={"color": "#2d2616", "margin-bottom": "6px"},
+        width=1200,
+    )
+    hdbscan_context_row = row(
+        year_cycle_plot,
+        day_cycle_plot,
+        mercator_plot,
+        sizing_mode="scale_width",
+        styles={"gap": "10px", "flex-wrap": "wrap"},
+    )
+    hdbscan_context_panel = column(
+        Div(
+            text="HDBSCAN geo/time diagnostics",
+            styles={
+                "font-size": "15px",
+                "font-weight": "600",
+                "margin-bottom": "6px",
+                "color": "#2d2616",
+            },
+        ),
+        hdbscan_context_status_box,
+        hdbscan_context_row,
+        sizing_mode="stretch_width",
+        width=1200,
+        css_classes=["control-card"],
+        styles={
+            "background-color": CARD_BACKGROUND_COLOR,
+            "border-radius": "12px",
+            "padding": "12px 14px",
+            "box-shadow": "0 3px 10px rgba(0, 0, 0, 0.08)",
+        },
+    )
+
+    def reset_hdbscan_context_plots(message: str | None = None) -> None:
+        """Clear cycle/map diagnostics and optionally set the status message."""
+
+        hdbscan_year_hist_source.data = {
+            "left": [],
+            "right": [],
+            "top": [],
+            "color": [],
+            "alpha": [],
+            "label": [],
+        }
+        hdbscan_day_hist_source.data = {
+            "left": [],
+            "right": [],
+            "top": [],
+            "color": [],
+            "alpha": [],
+            "label": [],
+        }
+        hdbscan_map_source.data = {
+            "x": [],
+            "y": [],
+            "color": [],
+            "alpha": [],
+            "label": [],
+        }
+        year_cycle_plot.y_range.start = 0
+        year_cycle_plot.y_range.end = 1
+        day_cycle_plot.y_range.start = 0
+        day_cycle_plot.y_range.end = 1
+        mercator_plot.x_range.start = -20_037_508
+        mercator_plot.x_range.end = 20_037_508
+        mercator_plot.y_range.start = -20_037_508
+        mercator_plot.y_range.end = 20_037_508
+        hdbscan_context_status_box.text = (
+            message
+            or "<em>Compute HDBSCAN to populate cycle and map diagnostics.</em>"
+        )
+
     pcp_panel = column(
         Div(
             text="Parallel coordinates (UMAP dimensions)",
@@ -1649,6 +1915,37 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         recordist_limit_spinner.disabled = not bool(new)
 
     recordist_only_checkbox.on_change("active", on_recordist_toggle_change)
+
+    def on_hdbscan_options_changed() -> None:
+        """Reset HDBSCAN results when auxiliary clustering settings change."""
+
+        if bool(hdbscan_include_aux_checkbox.active):
+            hdbscan_aux_dimensions_checkbox.disabled = False
+        else:
+            hdbscan_aux_dimensions_checkbox.disabled = True
+        had_clusters = bool(current_hdbscan_labels)
+        if had_clusters:
+            clear_hdbscan_results()
+        if current_umap_projection is not None and current_umap_projection.size:
+            hdbscan_status_box.text = (
+                "<em>HDBSCAN settings changed; press Compute.</em>"
+            )
+
+    def on_hdbscan_aux_toggle_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        on_hdbscan_options_changed()
+
+    hdbscan_include_aux_checkbox.on_change("active", on_hdbscan_aux_toggle_change)
+
+    def on_hdbscan_aux_dimensions_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        on_hdbscan_options_changed()
+
+    hdbscan_aux_dimensions_checkbox.on_change(
+        "active", on_hdbscan_aux_dimensions_change
+    )
 
     def on_energy_distance_slider_change(
         attr: str,
@@ -1937,6 +2234,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hdbscan_checklist.visible = False
         hdbscan_clusters_label.visible = False
         hdbscan_status_box.text = "<em>Run UMAP or PCA first, then compute clusters.</em>"
+        reset_hdbscan_context_plots(
+            "<em>Compute HDBSCAN to populate cycle and map diagnostics.</em>"
+        )
         if pcp_source.data.get("xs"):
             current_data = pcp_source.data
             point_count = len(current_data.get("key", []))
@@ -3045,6 +3345,472 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         if not lat_col or not lon_col:
             return None
         return lat_col, lon_col
+
+    def find_column_case_insensitive(
+        metadata_df: pd.DataFrame, candidates: tuple[str, ...]
+    ) -> str | None:
+        """Return first matching metadata column from candidate names."""
+
+        col_map = {str(col).lower(): str(col) for col in metadata_df.columns}
+        for candidate in candidates:
+            match = col_map.get(candidate.lower())
+            if match:
+                return match
+        return None
+
+    def parse_time_to_seconds(value: Any) -> float:
+        """Parse a time-like value to seconds since midnight."""
+
+        if value is None:
+            return float("nan")
+        try:
+            if pd.isna(value):
+                return float("nan")
+        except TypeError:
+            pass
+        if isinstance(value, pd.Timestamp):
+            return float(
+                value.hour * 3600
+                + value.minute * 60
+                + value.second
+                + value.microsecond / 1_000_000.0
+            )
+        raw = str(value).strip()
+        if not raw:
+            return float("nan")
+        lower = raw.lower()
+        if lower in {"nan", "none", "null", "na", "n/a", "unknown", "?"}:
+            return float("nan")
+
+        match = TIME_OF_DAY_PATTERN.search(lower)
+        if match:
+            hour = int(match.group(1))
+            minute = int(match.group(2))
+            second = int(match.group(3) or "0")
+            if 0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60:
+                return float(hour * 3600 + minute * 60 + second)
+
+        parsed = pd.to_datetime(raw, errors="coerce")
+        if pd.isna(parsed):
+            return float("nan")
+        return float(parsed.hour * 3600 + parsed.minute * 60 + parsed.second)
+
+    def build_geo_feature_block(
+        metadata_df: pd.DataFrame,
+    ) -> tuple[np.ndarray | None, str | None, str | None]:
+        """Return 3D unit-sphere coordinates from lat/lon metadata."""
+
+        coord_cols = find_coordinate_columns(metadata_df)
+        if coord_cols is None:
+            return None, None, "Lat/Lon columns were not found in metadata."
+        lat_col, lon_col = coord_cols
+        lat = pd.to_numeric(metadata_df[lat_col], errors="coerce")
+        lon = pd.to_numeric(metadata_df[lon_col], errors="coerce")
+        valid = (
+            lat.notna()
+            & lon.notna()
+            & lat.between(-90.0, 90.0)
+            & lon.between(-180.0, 180.0)
+        ).to_numpy()
+        if not valid.any():
+            return (
+                None,
+                None,
+                f"No valid Lat/Lon values found in {lat_col}/{lon_col}.",
+            )
+
+        features = np.full((len(metadata_df), 3), np.nan, dtype=float)
+        lat_rad = np.deg2rad(lat.to_numpy(dtype=float))
+        lon_rad = np.deg2rad(lon.to_numpy(dtype=float))
+        cos_lat = np.cos(lat_rad)
+        features[valid, 0] = cos_lat[valid] * np.cos(lon_rad[valid])
+        features[valid, 1] = cos_lat[valid] * np.sin(lon_rad[valid])
+        features[valid, 2] = np.sin(lat_rad[valid])
+        return features, f"Lat/Lon xyz ({lat_col}/{lon_col})", None
+
+    def build_date_feature_block(
+        metadata_df: pd.DataFrame,
+    ) -> tuple[np.ndarray | None, str | None, str | None]:
+        """Return cyclic date features that ignore the year."""
+
+        date_col = find_column_case_insensitive(metadata_df, DATE_COLUMN_CANDIDATES)
+        if date_col is None:
+            return None, None, "Date column was not found in metadata."
+        parsed = pd.to_datetime(metadata_df[date_col], errors="coerce")
+        valid = parsed.notna().to_numpy()
+        if not valid.any():
+            return None, None, f"No valid dates found in {date_col}."
+
+        month = parsed.dt.month.to_numpy(dtype=float)
+        day = parsed.dt.day.to_numpy(dtype=float)
+        month_valid = month[valid].astype(int)
+        safe_day = day[valid].copy()
+        for month_idx in range(1, 13):
+            month_mask = month_valid == month_idx
+            safe_day[month_mask] = np.minimum(
+                safe_day[month_mask], MONTH_MAX_DAYS[month_idx - 1]
+            )
+        day_index = MONTH_OFFSETS[month_valid - 1] + (safe_day - 1.0)
+        angles = (2.0 * np.pi * day_index) / 365.0
+
+        features = np.full((len(metadata_df), 2), np.nan, dtype=float)
+        features[valid, 0] = np.sin(angles)
+        features[valid, 1] = np.cos(angles)
+        return features, f"Date cycle ({date_col})", None
+
+    def build_time_feature_block(
+        metadata_df: pd.DataFrame,
+    ) -> tuple[np.ndarray | None, str | None, str | None]:
+        """Return cyclic time-of-day features from metadata."""
+
+        time_col = find_column_case_insensitive(metadata_df, TIME_COLUMN_CANDIDATES)
+        if time_col is None:
+            return None, None, "Time column was not found in metadata."
+
+        seconds = np.array(
+            [parse_time_to_seconds(value) for value in metadata_df[time_col]],
+            dtype=float,
+        )
+        valid = np.isfinite(seconds)
+        if not valid.any():
+            return None, None, f"No valid times found in {time_col}."
+
+        angles = (2.0 * np.pi * seconds) / 86_400.0
+        features = np.full((len(metadata_df), 2), np.nan, dtype=float)
+        features[valid, 0] = np.sin(angles[valid])
+        features[valid, 1] = np.cos(angles[valid])
+        return features, f"Time cycle ({time_col})", None
+
+    def build_hdbscan_input_matrix(
+        projection: np.ndarray,
+        metadata_df: pd.DataFrame,
+        *,
+        include_lat_lon: bool,
+        include_date: bool,
+        include_time: bool,
+    ) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+        """Build and z-score the matrix used as HDBSCAN input."""
+
+        base_projection = np.asarray(projection, dtype=float)
+        if base_projection.ndim != 2:
+            raise ValueError("HDBSCAN projection must be a 2D array.")
+
+        feature_blocks = [base_projection]
+        used_features = [f"Projection dims ({base_projection.shape[1]})"]
+        warnings: list[str] = []
+
+        if include_lat_lon:
+            block, label, warning = build_geo_feature_block(metadata_df)
+            if block is None:
+                if warning:
+                    warnings.append(warning)
+            else:
+                feature_blocks.append(block)
+                if label:
+                    used_features.append(label)
+
+        if include_date:
+            block, label, warning = build_date_feature_block(metadata_df)
+            if block is None:
+                if warning:
+                    warnings.append(warning)
+            else:
+                feature_blocks.append(block)
+                if label:
+                    used_features.append(label)
+
+        if include_time:
+            block, label, warning = build_time_feature_block(metadata_df)
+            if block is None:
+                if warning:
+                    warnings.append(warning)
+            else:
+                feature_blocks.append(block)
+                if label:
+                    used_features.append(label)
+
+        combined = np.hstack(feature_blocks).astype(float, copy=False)
+        scaled = combined.copy()
+        for col_idx in range(scaled.shape[1]):
+            column = scaled[:, col_idx]
+            finite = np.isfinite(column)
+            if not finite.any():
+                continue
+            mean = float(column[finite].mean())
+            std = float(column[finite].std())
+            if std > 0.0:
+                scaled[finite, col_idx] = (column[finite] - mean) / std
+            else:
+                scaled[finite, col_idx] = 0.0
+        valid_mask = np.isfinite(scaled).all(axis=1)
+        return scaled, valid_mask, used_features, warnings
+
+    def date_cycle_day_series(
+        metadata_df: pd.DataFrame,
+    ) -> tuple[np.ndarray | None, str | None, str | None]:
+        """Return day-of-year values on a 365-day cycle (ignoring year)."""
+
+        date_col = find_column_case_insensitive(metadata_df, DATE_COLUMN_CANDIDATES)
+        if date_col is None:
+            return None, None, "Date column was not found for year-cycle plot."
+        parsed = pd.to_datetime(metadata_df[date_col], errors="coerce")
+        valid = parsed.notna().to_numpy()
+        if not valid.any():
+            return None, None, f"No valid dates found in {date_col} for year-cycle plot."
+
+        month = parsed.dt.month.to_numpy(dtype=float)
+        day = parsed.dt.day.to_numpy(dtype=float)
+        month_valid = month[valid].astype(int)
+        safe_day = day[valid].copy()
+        for month_idx in range(1, 13):
+            month_mask = month_valid == month_idx
+            safe_day[month_mask] = np.minimum(
+                safe_day[month_mask], MONTH_MAX_DAYS[month_idx - 1]
+            )
+        values = np.full(len(metadata_df), np.nan, dtype=float)
+        values[valid] = MONTH_OFFSETS[month_valid - 1] + (safe_day - 1.0)
+        return values, date_col, None
+
+    def time_cycle_hour_series(
+        metadata_df: pd.DataFrame,
+    ) -> tuple[np.ndarray | None, str | None, str | None]:
+        """Return hour-of-day values on a 24-hour cycle."""
+
+        time_col = find_column_case_insensitive(metadata_df, TIME_COLUMN_CANDIDATES)
+        if time_col is None:
+            return None, None, "Time column was not found for day-cycle plot."
+
+        seconds = np.array(
+            [parse_time_to_seconds(value) for value in metadata_df[time_col]],
+            dtype=float,
+        )
+        valid = np.isfinite(seconds)
+        if not valid.any():
+            return None, None, f"No valid times found in {time_col} for day-cycle plot."
+        hours = np.full(len(metadata_df), np.nan, dtype=float)
+        hours[valid] = np.mod(seconds[valid], 86_400.0) / 3_600.0
+        return hours, time_col, None
+
+    def lat_lon_to_web_mercator(
+        lat_deg: np.ndarray, lon_deg: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Project latitude/longitude arrays to Web Mercator meters."""
+
+        lat_clipped = np.clip(lat_deg, -WEB_MERCATOR_MAX_LAT, WEB_MERCATOR_MAX_LAT)
+        lon_rad = np.deg2rad(lon_deg)
+        lat_rad = np.deg2rad(lat_clipped)
+        x = EARTH_WEB_MERCATOR_RADIUS * lon_rad
+        y = EARTH_WEB_MERCATOR_RADIUS * np.log(np.tan(np.pi / 4.0 + lat_rad / 2.0))
+        return x, y
+
+    def update_hdbscan_context_plots() -> None:
+        """Populate year/day cycle histograms and mercator scatter by cluster."""
+
+        if current_umap_metadata is None or current_hdbscan_labels is None:
+            reset_hdbscan_context_plots()
+            return
+
+        labels = np.array(current_hdbscan_labels, dtype=str)
+        if len(labels) != len(current_umap_metadata):
+            reset_hdbscan_context_plots(
+                "<em>HDBSCAN labels and metadata are misaligned for diagnostics.</em>"
+            )
+            return
+
+        def _label_key(label: str) -> tuple[int, int | str]:
+            if label == HDBSCAN_NOISE_LABEL:
+                return (0, -1)
+            try:
+                return (1, int(label))
+            except ValueError:
+                return (2, label)
+
+        ordered_labels = sorted(set(labels.tolist()), key=_label_key)
+        warnings: list[str] = []
+
+        year_values, year_col, year_warning = date_cycle_day_series(current_umap_metadata)
+        if year_values is None:
+            if year_warning:
+                warnings.append(year_warning)
+            hdbscan_year_hist_source.data = {
+                "left": [],
+                "right": [],
+                "top": [],
+                "color": [],
+                "alpha": [],
+                "label": [],
+            }
+            year_cycle_plot.y_range.start = 0
+            year_cycle_plot.y_range.end = 1
+        else:
+            bins = np.linspace(0.0, 365.0, HDBSCAN_YEAR_HIST_BINS + 1)
+            year_data: dict[str, list[Any]] = {
+                "left": [],
+                "right": [],
+                "top": [],
+                "color": [],
+                "alpha": [],
+                "label": [],
+            }
+            max_count = 0
+            finite_year = np.isfinite(year_values)
+            for label in ordered_labels:
+                mask = (labels == label) & finite_year
+                if not mask.any():
+                    continue
+                counts, _ = np.histogram(year_values[mask], bins=bins)
+                if counts.size:
+                    max_count = max(max_count, int(np.max(counts)))
+                color = current_hdbscan_color_map.get(label, PCP_OTHER_COLOR)
+                for idx, count in enumerate(counts):
+                    if count <= 0:
+                        continue
+                    year_data["left"].append(float(bins[idx]))
+                    year_data["right"].append(float(bins[idx + 1]))
+                    year_data["top"].append(int(count))
+                    year_data["color"].append(color)
+                    year_data["alpha"].append(0.35)
+                    year_data["label"].append(label)
+            hdbscan_year_hist_source.data = year_data
+            year_cycle_plot.y_range.start = 0
+            year_cycle_plot.y_range.end = max(1.0, max_count * 1.1)
+
+        day_values, day_col, day_warning = time_cycle_hour_series(current_umap_metadata)
+        if day_values is None:
+            if day_warning:
+                warnings.append(day_warning)
+            hdbscan_day_hist_source.data = {
+                "left": [],
+                "right": [],
+                "top": [],
+                "color": [],
+                "alpha": [],
+                "label": [],
+            }
+            day_cycle_plot.y_range.start = 0
+            day_cycle_plot.y_range.end = 1
+        else:
+            bins = np.linspace(0.0, 24.0, HDBSCAN_DAY_HIST_BINS + 1)
+            day_data: dict[str, list[Any]] = {
+                "left": [],
+                "right": [],
+                "top": [],
+                "color": [],
+                "alpha": [],
+                "label": [],
+            }
+            max_count = 0
+            finite_day = np.isfinite(day_values)
+            for label in ordered_labels:
+                mask = (labels == label) & finite_day
+                if not mask.any():
+                    continue
+                counts, _ = np.histogram(day_values[mask], bins=bins)
+                if counts.size:
+                    max_count = max(max_count, int(np.max(counts)))
+                color = current_hdbscan_color_map.get(label, PCP_OTHER_COLOR)
+                for idx, count in enumerate(counts):
+                    if count <= 0:
+                        continue
+                    day_data["left"].append(float(bins[idx]))
+                    day_data["right"].append(float(bins[idx + 1]))
+                    day_data["top"].append(int(count))
+                    day_data["color"].append(color)
+                    day_data["alpha"].append(0.35)
+                    day_data["label"].append(label)
+            hdbscan_day_hist_source.data = day_data
+            day_cycle_plot.y_range.start = 0
+            day_cycle_plot.y_range.end = max(1.0, max_count * 1.1)
+
+        coord_cols = find_coordinate_columns(current_umap_metadata)
+        if coord_cols is None:
+            warnings.append("Lat/Lon columns were not found for mercator plot.")
+            hdbscan_map_source.data = {
+                "x": [],
+                "y": [],
+                "color": [],
+                "alpha": [],
+                "label": [],
+            }
+            mercator_plot.x_range.start = -20_037_508
+            mercator_plot.x_range.end = 20_037_508
+            mercator_plot.y_range.start = -20_037_508
+            mercator_plot.y_range.end = 20_037_508
+        else:
+            lat_col, lon_col = coord_cols
+            lat = pd.to_numeric(current_umap_metadata[lat_col], errors="coerce").to_numpy(
+                dtype=float
+            )
+            lon = pd.to_numeric(current_umap_metadata[lon_col], errors="coerce").to_numpy(
+                dtype=float
+            )
+            valid_geo = (
+                np.isfinite(lat)
+                & np.isfinite(lon)
+                & (lat >= -90.0)
+                & (lat <= 90.0)
+                & (lon >= -180.0)
+                & (lon <= 180.0)
+            )
+            if not valid_geo.any():
+                warnings.append(
+                    f"No valid Lat/Lon values found in {lat_col}/{lon_col} for mercator plot."
+                )
+                hdbscan_map_source.data = {
+                    "x": [],
+                    "y": [],
+                    "color": [],
+                    "alpha": [],
+                    "label": [],
+                }
+                mercator_plot.x_range.start = -20_037_508
+                mercator_plot.x_range.end = 20_037_508
+                mercator_plot.y_range.start = -20_037_508
+                mercator_plot.y_range.end = 20_037_508
+            else:
+                x, y = lat_lon_to_web_mercator(lat[valid_geo], lon[valid_geo])
+                map_labels = labels[valid_geo]
+                map_colors = [
+                    current_hdbscan_color_map.get(label, PCP_OTHER_COLOR)
+                    for label in map_labels
+                ]
+                hdbscan_map_source.data = {
+                    "x": x.tolist(),
+                    "y": y.tolist(),
+                    "color": map_colors,
+                    "alpha": [0.72] * len(map_colors),
+                    "label": map_labels.tolist(),
+                }
+                x_min = float(np.min(x))
+                x_max = float(np.max(x))
+                y_min = float(np.min(y))
+                y_max = float(np.max(y))
+                x_pad = (x_max - x_min) * 0.1
+                y_pad = (y_max - y_min) * 0.1
+                if x_pad <= 0:
+                    x_pad = 50_000.0
+                if y_pad <= 0:
+                    y_pad = 50_000.0
+                mercator_plot.x_range.start = x_min - x_pad
+                mercator_plot.x_range.end = x_max + x_pad
+                mercator_plot.y_range.start = y_min - y_pad
+                mercator_plot.y_range.end = y_max + y_pad
+
+        status_lines = [
+            "<strong>Diagnostics:</strong> Year/day cycles and geo points colored by HDBSCAN group."
+        ]
+        if year_col is not None:
+            status_lines.append(f"<em>Year cycle source:</em> {html.escape(year_col)}")
+        if day_col is not None:
+            status_lines.append(f"<em>Day cycle source:</em> {html.escape(day_col)}")
+        if coord_cols is not None:
+            status_lines.append(
+                "<em>Mercator source:</em> "
+                f"{html.escape(coord_cols[0])}/{html.escape(coord_cols[1])}"
+            )
+        for warning in warnings:
+            status_lines.append(f"<em>{html.escape(warning)}</em>")
+        hdbscan_context_status_box.text = "<br>".join(status_lines)
 
     def find_recordist_column(metadata_df: pd.DataFrame) -> str | None:
         """Return recordist column name when present (case-insensitive)."""
@@ -4798,9 +5564,49 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             hdbscan_status_box.text = "<em>Invalid HDBSCAN parameter values.</em>"
             return
 
+        include_aux = bool(hdbscan_include_aux_checkbox.active)
+        active_aux_dims = (
+            set(hdbscan_aux_dimensions_checkbox.active) if include_aux else set()
+        )
+        include_lat_lon = include_aux and HDBSCAN_AUX_GEO_IDX in active_aux_dims
+        include_date = include_aux and HDBSCAN_AUX_DATE_IDX in active_aux_dims
+        include_time = include_aux and HDBSCAN_AUX_TIME_IDX in active_aux_dims
+
+        hdbscan_matrix, valid_mask, used_features, feature_warnings = (
+            build_hdbscan_input_matrix(
+                current_umap_projection,
+                current_umap_metadata,
+                include_lat_lon=include_lat_lon,
+                include_date=include_date,
+                include_time=include_time,
+            )
+        )
+        if include_aux and not any((include_lat_lon, include_date, include_time)):
+            feature_warnings.append(
+                "Auxiliary mode enabled, but no auxiliary dimensions were selected."
+            )
+        valid_count = int(valid_mask.sum())
+        total_rows = int(hdbscan_matrix.shape[0])
+        dropped_rows = total_rows - valid_count
+        if valid_count < 2:
+            if dropped_rows:
+                hdbscan_status_box.text = (
+                    "<em>Not enough valid points for HDBSCAN after filtering "
+                    f"missing geo/date/time values ({valid_count} of {total_rows}).</em>"
+                )
+            else:
+                hdbscan_status_box.text = (
+                    "<em>Not enough points available to run HDBSCAN.</em>"
+                )
+            return
+
         last_hdbscan_params = {
             "min_cluster_size": min_cluster_size,
             "min_samples": min_samples,
+            "include_geo_date_time": include_aux,
+            "include_lat_lon": include_lat_lon,
+            "include_date": include_date,
+            "include_time": include_time,
         }
 
         current_hdbscan_clusterer = None
@@ -4812,7 +5618,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 min_cluster_size=min_cluster_size,
                 min_samples=min_samples,
             )
-            labels_array = clusterer.fit_predict(current_umap_projection)
+            if valid_count == total_rows:
+                labels_array = clusterer.fit_predict(hdbscan_matrix)
+            else:
+                subset_labels = clusterer.fit_predict(hdbscan_matrix[valid_mask])
+                labels_array = np.full(total_rows, -1, dtype=int)
+                labels_array[valid_mask] = subset_labels
         except Exception as exc:  # noqa: BLE001
             hdbscan_status_box.text = (
                 f"<em>HDBSCAN failed: {html.escape(str(exc))}</em>"
@@ -4830,6 +5641,17 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             str(label) if label >= 0 else HDBSCAN_NOISE_LABEL
             for label in labels_array
         ]
+        current_data = pcp_source.data
+        point_count = len(current_data.get("xs", []))
+        if point_count != len(labels):
+            reset_hdbscan_context_plots(
+                "<em>HDBSCAN labels did not match the plotted points.</em>"
+            )
+            hdbscan_status_box.text = (
+                "<em>HDBSCAN labels did not match the plotted points.</em>"
+            )
+            return
+
         current_hdbscan_labels = labels
         current_hdbscan_clusterer = clusterer
         unique_labels = sorted(
@@ -4858,14 +5680,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "<em>Press Save HDBSCAN groups to export clusters.</em>"
         )
         update_condensed_tree()
-
-        current_data = pcp_source.data
-        point_count = len(current_data.get("xs", []))
-        if point_count != len(labels):
-            hdbscan_status_box.text = (
-                "<em>HDBSCAN labels did not match the plotted points.</em>"
-            )
-            return
+        update_hdbscan_context_plots()
 
         pcp_source.data = {
             "xs": current_data.get("xs", []),
@@ -4898,10 +5713,21 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         noise_count = labels.count(HDBSCAN_NOISE_LABEL)
         total = len(labels)
         noise_pct = (100.0 * noise_count / total) if total else 0.0
-        hdbscan_status_box.text = (
-            f"<strong>HDBSCAN:</strong> {cluster_count} clusters, {noise_count} noise "
-            f"({noise_pct:.1f}% of {total} points)"
-        )
+        status_lines = [
+            (
+                f"<strong>HDBSCAN:</strong> {cluster_count} clusters, {noise_count} "
+                f"noise ({noise_pct:.1f}% of {total} points)"
+            ),
+            f"<em>Features:</em> {html.escape(', '.join(used_features))}",
+        ]
+        if dropped_rows:
+            status_lines.append(
+                "<em>Rows assigned to Noise due to missing selected features:</em> "
+                f"{dropped_rows}"
+            )
+        for warning in feature_warnings:
+            status_lines.append(f"<em>{html.escape(warning)}</em>")
+        hdbscan_status_box.text = "<br>".join(status_lines)
 
     def on_calculate_click() -> None:
         calculate_button.label = "Calculating..."
@@ -5415,6 +6241,7 @@ html, body {{
         location_hint,
         main_row,
         pcp_panel,
+        hdbscan_context_panel,
         sizing_mode="scale_width",
         width=1200,
         styles={

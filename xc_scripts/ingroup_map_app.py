@@ -550,6 +550,73 @@ def empty_points_data() -> dict[str, list[Any]]:
     }
 
 
+MONTH_LABELS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
+
+
+def compute_month_counts(dates: list[Any]) -> list[int]:
+    """Compute month histogram counts across all years."""
+    if not dates:
+        return [0] * 12
+    series = pd.Series(list(dates)).dropna()
+    if series.empty:
+        return [0] * 12
+    text = series.astype(str).str.strip()
+    text = text[text.astype(bool)]
+    if text.empty:
+        return [0] * 12
+    lowered = text.str.lower()
+    text = text[~lowered.isin({"nan", "none", "nat"})]
+    if text.empty:
+        return [0] * 12
+    has_hint = (
+        text.str.contains(r"[-/]", regex=True)
+        | text.str.contains(r"[A-Za-z]", regex=True)
+        | text.str.len().gt(4)
+    )
+    text = text[has_hint]
+    if text.empty:
+        return [0] * 12
+    parsed = pd.to_datetime(text, errors="coerce", dayfirst=False)
+    missing = parsed.isna()
+    if missing.any():
+        parsed_alt = pd.to_datetime(
+            text[missing], errors="coerce", dayfirst=True
+        )
+        parsed.loc[missing] = parsed_alt
+    months = parsed.dt.month.dropna().astype(int)
+    if months.empty:
+        return [0] * 12
+    values = months.to_numpy() - 1
+    counts = np.bincount(values, minlength=12)
+    return counts.tolist()
+
+
+def update_month_histogram(dates: list[Any], label: str = "") -> None:
+    """Update the month histogram plot from date values."""
+    counts = compute_month_counts(dates)
+    total = int(sum(counts))
+    title = "Monthly density"
+    if label:
+        title = f"{title} ({label}, n={total})"
+    else:
+        title = f"{title} (n={total})"
+    month_source.data = {"month": MONTH_LABELS, "count": counts}
+    month_plot.title.text = title
+
+
 def update_map_range(map_fig: Any, x_values: np.ndarray, y_values: np.ndarray) -> None:
     """Auto-zoom the map to the current points."""
     valid = np.isfinite(x_values) & np.isfinite(y_values)
@@ -756,6 +823,9 @@ table_source = ColumnDataSource(
 points_source = ColumnDataSource(
     data=empty_points_data()
 )
+month_source = ColumnDataSource(
+    data={"month": MONTH_LABELS, "count": [0] * len(MONTH_LABELS)}
+)
 
 status_div = Div(text="<i>Select an ingroup to display its map and metadata.</i>")
 stats_div = Div(text="")
@@ -825,6 +895,7 @@ def refresh_ingroup_table() -> None:
     points_source.data = empty_points_data()
     points_source.selected.indices = []
     metadata_div.text = "<i>No ingroup selected.</i>"
+    update_month_histogram([])
 
 
 def build_ingroup_entries(source_id: str, max_entries: int) -> list[dict[str, Any]]:
@@ -851,6 +922,7 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
         points_source.data = empty_points_data()
         points_source.selected.indices = []
         metadata_div.text = "<i>No ingroup entries available.</i>"
+        update_month_histogram([])
         return
 
     lat_values: list[float] = []
@@ -903,6 +975,7 @@ def update_map_and_metadata(source_id: str, max_entries: int) -> None:
     status_div.text = (
         f"<b>Ingroup {html.escape(source_id)}</b>: {len(entries)} entries"
     )
+    update_month_histogram(dates, label=f"ingroup {source_id}")
     if AUTO_ZOOM:
         update_map_range(map_plot, x_vals, y_vals)
 
@@ -914,6 +987,7 @@ def on_table_selection(attr: str, old: list[int], new: list[int]) -> None:
         points_source.data = empty_points_data()
         points_source.selected.indices = []
         metadata_div.text = "<i>No ingroup selected.</i>"
+        update_month_histogram([])
         return
 
     if len(new) > 1:
@@ -1019,6 +1093,28 @@ map_hover = HoverTool(
 )
 map_plot.add_tools(map_hover)
 
+month_plot = figure(
+    title="Monthly density",
+    x_range=MONTH_LABELS,
+    width=620,
+    height=180,
+    tools="",
+    toolbar_location=None,
+)
+month_plot.vbar(
+    x="month",
+    top="count",
+    width=0.9,
+    source=month_source,
+    color="#264653",
+    line_color="#1b1b1b",
+)
+month_plot.y_range.start = 0
+month_plot.xgrid.grid_line_color = None
+month_plot.yaxis.axis_label = "Count"
+month_plot.xaxis.axis_label = "Month"
+month_plot.add_tools(HoverTool(tooltips=[("month", "@month"), ("count", "@count")]))
+
 controls = column(size_spinner, top_n_spinner, sort_select, stats_div, status_div)
 table_panel = column(Div(text="<b>Top ingroups</b>"), controls, ingroup_table)
 
@@ -1028,7 +1124,8 @@ metadata_panel = column(
     metadata_div,
     width=380,
 )
-layout = row(table_panel, map_plot, metadata_panel, sizing_mode="scale_both")
+map_panel = column(map_plot, month_plot)
+layout = row(table_panel, map_panel, metadata_panel, sizing_mode="scale_both")
 
 curdoc().add_root(layout)
 curdoc().title = f"Ingroup map - {SPECIES_SLUG}"
