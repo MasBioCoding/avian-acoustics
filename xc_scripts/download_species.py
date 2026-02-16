@@ -18,6 +18,8 @@ Usage:
     python xc_scripts/download_species.py --config xc_configs_perch/config_phylloscopus_trochilus.yaml
     python xc_scripts/download_species.py --config xc_configs_perch/config_turdus_philomelos.yaml
     python xc_scripts/download_species.py --config xc_configs_perch/config_prunella_modularis.yaml
+    python xc_scripts/download_species.py --config xc_configs_perch/config_cyanistes_caeruleus.yaml
+    python xc_scripts/download_species.py --config xc_configs_perch/config_parus_major.yaml
 
     python xc_scripts/download_species.py --config xc_configs/config_regulus_ignicapilla.yaml
     python xc_scripts/download_species.py --config xc_configs/config_regulus_regulus.yaml

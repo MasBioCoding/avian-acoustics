@@ -20,6 +20,8 @@ python xc_scripts/process_species_perch.py --config xc_configs_perch/config_phyl
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_prunella_modularis.yaml --use-existing-detections --skip-embeddings
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_limosa_limosa.yaml --use-existing-detections --skip-embeddings
 python xc_scripts/process_species_perch.py --config xc_configs_perch/config_phylloscopus_trochilus.yaml --use-existing-detections --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_parus_major.yaml --skip-embeddings
+python xc_scripts/process_species_perch.py --config xc_configs_perch/config_cyanistes_caeruleus.yaml --skip-embeddings
 
 
     python xc_scripts/process_species_perch.py --config xc_configs_perch/config_regulus_ignicapilla.yaml
