@@ -59,6 +59,13 @@ Config tweaks (config yaml):
     --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
     --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/prunella_modularis" \
     --top-n 3000
+    
+    bokeh serve xc_scripts/ingroup_map_app.py --show --args \
+    --config xc_configs_perch/config_carduelis_carduelis.yaml \
+    --ingroup-csv "/Users/masjansma/Desktop/temp_edvecs/ingroup_energy_with_meta.csv" \
+    --topk-csv "/Users/masjansma/Desktop/temp_edvecs/topk_table_meta_annotated.csv" \
+    --spectrogram-dir "/Volumes/Z Slim/zslim_birdcluster/spectrograms/carduelis_carduelis" \
+    --top-n 3000
 
 
 Inference mode:
