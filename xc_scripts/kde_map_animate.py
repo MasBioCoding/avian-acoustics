@@ -75,10 +75,11 @@ ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
 FILTER_ONE_PER_RECORDIST = True
 
-NUM_ISOCLINES = 8
+NUM_ISOCLINES = 5
 FILL_ISOCLINES = True
-HDR_MIN_PROB = 0.05
-HDR_MAX_PROB = 0.7
+HDR_MIN_PROB = 0.1
+HDR_MAX_PROB = 0.89
+ISOCLINE_PROB_ROUND_STEP = 0.03  # Set <= 0 to disable interior rounding.
 
 DATE_FILTER_MODE = (
     "range"  # "all", "recent", "exclude_recent", or "range"
@@ -118,19 +119,20 @@ PLAYLIST_WIDTH = 860
 POINT_SIZE = 15
 POINT_ALPHA = 0.7
 POINT_LINE_WIDTH = 2.5
-ISOCLINE_FILL_ALPHA = 0.2
-ISOCLINE_STROKE_WIDTH = 2.5  # Set to 0 to remove isocline outlines.
+ISOCLINE_FILL_ALPHA = 0.4
+ISOCLINE_FILL_MODE = "bands"  # "bands" (non-overlapping) or "stacked"
+ISOCLINE_STROKE_WIDTH = 1  # Set to 0 to remove isocline outlines.
 ISOCLINE_STROKE_COLOR = "#000000"
 ISOCLINE_STROKE_ALPHA = 1
 ISOCLINE_LINE_WIDTH = 10
-ISOCLINE_LINE_ALPHA = 1
+ISOCLINE_LINE_ALPHA = 0.6
 ISOCLINE_COLOR_MODE = "colormap"  # "anchors" or "colormap"
 ISOCLINE_COLOR_ANCHORS = ["#0b1d8b", "#00a878", "#f4d03f", "#e53935"]
-ISOCLINE_COLORMAP_NAME = "cividis"  # Example: "viridis", "magma", "Viridis256"
+ISOCLINE_COLORMAP_NAME = "viridis"  # Example: "viridis", "magma", "Viridis256"
 ISOCLINE_COLORMAP_REVERSE = True  # True maps first isocline to colormap max.
 ISOCLINE_STROKE_COLOR_MODE = "colormap"  # "single", "match_fill", "anchors", or "colormap"
 ISOCLINE_STROKE_COLOR_ANCHORS = ["#0b1d8b", "#00a878", "#f4d03f", "#e53935"]
-ISOCLINE_STROKE_COLORMAP_NAME = "cividis"
+ISOCLINE_STROKE_COLORMAP_NAME = "viridis"
 ISOCLINE_STROKE_COLORMAP_REVERSE = True
 WATER_BACKGROUND_COLOR = "#dcecf7"
 LAND_FILL_COLOR = "#F9EC9C"
@@ -141,8 +143,14 @@ MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "20pt"
 MAP_TITLE_FONT_STYLE = "italic"
 MAP_TITLE_TEXT = "Emberiza calandra"
-MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "14pt"
-MAP_AXIS_LABEL_FONT_SIZE = "16pt"
+MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
+MAP_AXIS_LABEL_FONT_SIZE = "32pt"
+MAP_LEGEND_LOCATION = "top_right"
+MAP_LEGEND_FONT_SIZE = "28pt"
+MAP_LEGEND_GLYPH_WIDTH = 56
+MAP_LEGEND_GLYPH_HEIGHT = 30
+MAP_LEGEND_LABEL_STANDOFF = 12
+MAP_LEGEND_SPACING = 10
 LAND_MASK_LON_BINS = 720
 LAND_MASK_LAT_BINS = 360
 LAND_MASK_SMOOTH_SIGMA = 1.6
@@ -1005,11 +1013,247 @@ def build_isocline_stroke_palette(
     return [ISOCLINE_STROKE_COLOR] * num_colors
 
 
+def use_band_fill_mode() -> bool:
+    """Return whether filled isoclines should be rendered as non-overlapping bands."""
+    mode = str(ISOCLINE_FILL_MODE).strip().lower()
+    if mode == "bands":
+        return True
+    if mode == "stacked":
+        return False
+    print("[WARN] ISOCLINE_FILL_MODE must be 'bands' or 'stacked'; using 'bands'.")
+    return True
+
+
+def polygon_area_xy(path: np.ndarray) -> float:
+    """Return absolute polygon area in projected coordinates."""
+    if len(path) < 3:
+        return 0.0
+    x_vals = path[:, 0]
+    y_vals = path[:, 1]
+    return 0.5 * float(
+        np.abs(
+            np.dot(x_vals, np.roll(y_vals, -1))
+            - np.dot(y_vals, np.roll(x_vals, -1))
+        )
+    )
+
+
+def point_in_polygon(point: np.ndarray, polygon: np.ndarray) -> bool:
+    """Ray-casting point-in-polygon test."""
+    x_coord = float(point[0])
+    y_coord = float(point[1])
+    inside = False
+    for idx in range(len(polygon) - 1):
+        x1, y1 = polygon[idx]
+        x2, y2 = polygon[idx + 1]
+        if (y1 > y_coord) == (y2 > y_coord):
+            continue
+        denom = y2 - y1
+        if abs(denom) < 1e-12:
+            continue
+        x_intersection = (x2 - x1) * (y_coord - y1) / denom + x1
+        if x_coord < x_intersection:
+            inside = not inside
+    return inside
+
+
+def find_interior_seed_point(path: np.ndarray) -> np.ndarray:
+    """Return a point that is likely inside a closed polygon path."""
+    if len(path) < 4:
+        return np.array([np.nan, np.nan], dtype=float)
+
+    candidate = np.mean(path[:-1], axis=0)
+    if point_in_polygon(candidate, path):
+        return candidate
+
+    min_x = float(np.min(path[:, 0]))
+    max_x = float(np.max(path[:, 0]))
+    min_y = float(np.min(path[:, 1]))
+    max_y = float(np.max(path[:, 1]))
+
+    for grid_size in (7, 11, 15):
+        xs = np.linspace(min_x, max_x, grid_size)
+        ys = np.linspace(min_y, max_y, grid_size)
+        for x_coord in xs:
+            for y_coord in ys:
+                probe = np.array([x_coord, y_coord], dtype=float)
+                if point_in_polygon(probe, path):
+                    return probe
+
+    return candidate
+
+
+def build_region_polygons(
+    paths: Sequence[np.ndarray],
+) -> list[tuple[np.ndarray, list[np.ndarray]]]:
+    """Group contour rings into shell+hole polygons using containment depth."""
+    valid_paths = [
+        path for path in paths if len(path) >= 4 and polygon_area_xy(path) > 0
+    ]
+    if not valid_paths:
+        return []
+
+    areas = [polygon_area_xy(path) for path in valid_paths]
+    seeds = [find_interior_seed_point(path) for path in valid_paths]
+    parents: list[int | None] = [None] * len(valid_paths)
+
+    for idx, seed in enumerate(seeds):
+        best_parent_idx: int | None = None
+        best_parent_area = float("inf")
+        for candidate_idx, candidate_path in enumerate(valid_paths):
+            if candidate_idx == idx:
+                continue
+            candidate_area = areas[candidate_idx]
+            if candidate_area <= areas[idx]:
+                continue
+            if not point_in_polygon(seed, candidate_path):
+                continue
+            if candidate_area < best_parent_area:
+                best_parent_idx = candidate_idx
+                best_parent_area = candidate_area
+        parents[idx] = best_parent_idx
+
+    depth_cache: dict[int, int] = {}
+
+    def depth_for(index: int) -> int:
+        cached = depth_cache.get(index)
+        if cached is not None:
+            return cached
+        parent_idx = parents[index]
+        depth = 0 if parent_idx is None else depth_for(parent_idx) + 1
+        depth_cache[index] = depth
+        return depth
+
+    depths = [depth_for(idx) for idx in range(len(valid_paths))]
+    holes_by_shell: dict[int, list[np.ndarray]] = {
+        idx: [] for idx, depth in enumerate(depths) if depth % 2 == 0
+    }
+
+    for idx, depth in enumerate(depths):
+        if depth % 2 == 0:
+            continue
+        shell_idx = parents[idx]
+        while shell_idx is not None and depths[shell_idx] % 2 == 1:
+            shell_idx = parents[shell_idx]
+        if shell_idx is not None:
+            holes_by_shell.setdefault(shell_idx, []).append(valid_paths[idx])
+
+    shell_indices = sorted(
+        (idx for idx, depth in enumerate(depths) if depth % 2 == 0),
+        key=lambda idx: areas[idx],
+        reverse=True,
+    )
+    return [
+        (valid_paths[shell_idx], holes_by_shell.get(shell_idx, []))
+        for shell_idx in shell_indices
+    ]
+
+
+def source_data_to_paths(source_data: dict[str, list[list[float]]]) -> list[np.ndarray]:
+    """Convert isopleth source dictionaries into closed numpy paths."""
+    xs_list = source_data.get("xs", [])
+    ys_list = source_data.get("ys", [])
+    paths: list[np.ndarray] = []
+    for xs, ys in zip(xs_list, ys_list):
+        if len(xs) < 3 or len(xs) != len(ys):
+            continue
+        path = np.column_stack(
+            (
+                np.asarray(xs, dtype=float),
+                np.asarray(ys, dtype=float),
+            )
+        )
+        if not np.allclose(path[0], path[-1]):
+            path = np.vstack([path, path[0]])
+        paths.append(path)
+    return paths
+
+
+def build_band_multipolygon_source_data(
+    outer_paths: Sequence[np.ndarray], inner_paths: Sequence[np.ndarray]
+) -> dict[str, list]:
+    """Build MultiPolygons source data for one isocline band."""
+    outer_polygons = build_region_polygons(outer_paths)
+    if not outer_polygons:
+        return {"xs": [], "ys": []}
+
+    outer_shells = [shell for shell, _ in outer_polygons]
+    assigned_holes = [list(holes) for _, holes in outer_polygons]
+    outer_areas = [polygon_area_xy(path) for path in outer_shells]
+    inner_shells = [shell for shell, _ in build_region_polygons(inner_paths)]
+
+    for inner_path in inner_shells:
+        inner_seed = find_interior_seed_point(inner_path)
+        container_candidates: list[tuple[float, int]] = []
+        for outer_idx, outer_path in enumerate(outer_shells):
+            if not point_in_polygon(inner_seed, outer_path):
+                continue
+            if any(
+                point_in_polygon(inner_seed, hole_path)
+                for hole_path in assigned_holes[outer_idx]
+            ):
+                continue
+            container_candidates.append((outer_areas[outer_idx], outer_idx))
+        if not container_candidates:
+            continue
+        _, best_outer_idx = min(container_candidates)
+        assigned_holes[best_outer_idx].append(inner_path)
+
+    multi_xs: list[list[list[list[float]]]] = []
+    multi_ys: list[list[list[list[float]]]] = []
+    for outer_path, holes in zip(outer_shells, assigned_holes):
+        polygon_x_rings = [outer_path[:, 0].tolist()]
+        polygon_y_rings = [outer_path[:, 1].tolist()]
+        for hole_path in holes:
+            polygon_x_rings.append(hole_path[:, 0].tolist())
+            polygon_y_rings.append(hole_path[:, 1].tolist())
+        multi_xs.append([polygon_x_rings])
+        multi_ys.append([polygon_y_rings])
+
+    return {"xs": multi_xs, "ys": multi_ys}
+
+
+def build_band_sources_from_ordered_paths(
+    ordered_paths: Sequence[Sequence[np.ndarray]],
+) -> list[dict[str, list]]:
+    """Build non-overlapping band source data from outer-to-inner paths."""
+    if not ordered_paths:
+        return []
+    bands: list[dict[str, list]] = []
+    for idx, outer_paths in enumerate(ordered_paths):
+        inner_paths = ordered_paths[idx + 1] if idx + 1 < len(ordered_paths) else []
+        bands.append(build_band_multipolygon_source_data(outer_paths, inner_paths))
+    return bands
+
+
+def build_band_sources_from_level_sources(
+    level_sources: Sequence[dict[str, list[list[float]]]],
+    render_order: Sequence[int],
+) -> list[dict[str, list]]:
+    """Build non-overlapping band source data from aligned level sources."""
+    ordered_paths = [source_data_to_paths(level_sources[idx]) for idx in render_order]
+    return build_band_sources_from_ordered_paths(ordered_paths)
+
+
 def get_isocline_probabilities(num_levels: int) -> np.ndarray:
     """Return the HDR probabilities used to generate isoclines."""
     if num_levels <= 0:
         return np.array([], dtype=float)
-    return np.linspace(HDR_MIN_PROB, HDR_MAX_PROB, num_levels)
+    probabilities = np.linspace(HDR_MIN_PROB, HDR_MAX_PROB, num_levels, dtype=float)
+    round_step = float(ISOCLINE_PROB_ROUND_STEP)
+    if round_step <= 0 or num_levels <= 2:
+        return probabilities
+
+    interior = np.round(probabilities[1:-1] / round_step) * round_step
+    if probabilities[-1] >= probabilities[0]:
+        interior = np.clip(interior, probabilities[0], probabilities[-1])
+        interior = np.maximum.accumulate(interior)
+    else:
+        interior = np.clip(interior, probabilities[-1], probabilities[0])
+        interior = np.minimum.accumulate(interior)
+
+    probabilities[1:-1] = interior
+    return probabilities
 
 
 def log_isocline_percentages(num_levels: int) -> None:
@@ -1166,6 +1410,18 @@ def style_map_figure(plot: Any) -> None:
             "[WARN] No basemap available (primary/fallback); rendering water-only background."
         )
         _LAND_PATCH_WARNING_SHOWN = True
+
+
+def style_map_legend(plot: Any) -> None:
+    """Apply shared legend styling."""
+    for legend in plot.legend:
+        legend.location = MAP_LEGEND_LOCATION
+        legend.click_policy = "hide"
+        legend.label_text_font_size = MAP_LEGEND_FONT_SIZE
+        legend.glyph_width = MAP_LEGEND_GLYPH_WIDTH
+        legend.glyph_height = MAP_LEGEND_GLYPH_HEIGHT
+        legend.label_standoff = MAP_LEGEND_LABEL_STANDOFF
+        legend.spacing = MAP_LEGEND_SPACING
 
 
 def compute_bounds(
@@ -1587,23 +1843,45 @@ def plot_map(
         len(projected_isopleths), fill_palette=palette
     )
     ordered_isopleths = sorted(projected_isopleths, key=lambda iso: iso.level)
+    legend_added = False
 
     if FILL_ISOCLINES:
-        for iso, fill_color, stroke_color in zip(
-            ordered_isopleths, palette, stroke_palette
-        ):
-            xs_list = [path[:, 0].tolist() for path in iso.paths]
-            ys_list = [path[:, 1].tolist() for path in iso.paths]
-            if xs_list:
-                plot.patches(
-                    xs_list,
-                    ys_list,
-                    fill_color=fill_color,
-                    fill_alpha=ISOCLINE_FILL_ALPHA,
-                    line_color=stroke_color,
-                    line_alpha=ISOCLINE_STROKE_ALPHA,
-                    line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
-                )
+        if use_band_fill_mode():
+            ordered_paths = [iso.paths for iso in ordered_isopleths]
+            band_sources = build_band_sources_from_ordered_paths(ordered_paths)
+            for iso, band_source, fill_color, stroke_color in zip(
+                ordered_isopleths, band_sources, palette, stroke_palette
+            ):
+                if band_source["xs"]:
+                    plot.multi_polygons(
+                        xs=band_source["xs"],
+                        ys=band_source["ys"],
+                        fill_color=fill_color,
+                        fill_alpha=ISOCLINE_FILL_ALPHA,
+                        line_color=stroke_color,
+                        line_alpha=ISOCLINE_STROKE_ALPHA,
+                        line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
+                        legend_label=f"{iso.probability:.0%} isocline",
+                    )
+                    legend_added = True
+        else:
+            for iso, fill_color, stroke_color in zip(
+                ordered_isopleths, palette, stroke_palette
+            ):
+                xs_list = [path[:, 0].tolist() for path in iso.paths]
+                ys_list = [path[:, 1].tolist() for path in iso.paths]
+                if xs_list:
+                    plot.patches(
+                        xs_list,
+                        ys_list,
+                        fill_color=fill_color,
+                        fill_alpha=ISOCLINE_FILL_ALPHA,
+                        line_color=stroke_color,
+                        line_alpha=ISOCLINE_STROKE_ALPHA,
+                        line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
+                        legend_label=f"{iso.probability:.0%} isocline",
+                    )
+                    legend_added = True
     else:
         for iso, stroke_color in zip(ordered_isopleths, stroke_palette):
             xs_list = [path[:, 0].tolist() for path in iso.paths]
@@ -1615,8 +1893,9 @@ def plot_map(
                     line_color=stroke_color,
                     line_width=ISOCLINE_LINE_WIDTH,
                     line_alpha=ISOCLINE_LINE_ALPHA,
-                    legend_label=f"HDR {iso.probability:.0%}",
+                    legend_label=f"{iso.probability:.0%} isocline",
                 )
+                legend_added = True
 
     source = ColumnDataSource(
         build_point_source_data(points_df, lon, lat, x_merc, y_merc)
@@ -1642,9 +1921,8 @@ def plot_map(
     )
     plot.add_tools(hover)
 
-    if not FILL_ISOCLINES:
-        plot.legend.location = "top_left"
-        plot.legend.click_policy = "hide"
+    if legend_added:
+        style_map_legend(plot)
 
     output_path = output_html or OUTPUT_HTML
     output_file(output_path, title=plot_title)
@@ -1710,22 +1988,48 @@ def build_static_interactive_layout(
     stroke_palette = build_isocline_stroke_palette(
         len(probabilities), fill_palette=palette
     )
+    use_band_fill = FILL_ISOCLINES and use_band_fill_mode()
     render_order = list(range(len(probabilities) - 1, -1, -1))
+    band_source_data = (
+        build_band_sources_from_level_sources(source_data, render_order)
+        if use_band_fill
+        else []
+    )
     iso_sources: list[ColumnDataSource] = []
+    legend_added = False
     for draw_idx, source_idx in enumerate(render_order):
-        source = ColumnDataSource(source_data[source_idx])
+        initial_source_data = (
+            band_source_data[draw_idx] if use_band_fill else source_data[source_idx]
+        )
+        source = ColumnDataSource(initial_source_data)
         iso_sources.append(source)
         if FILL_ISOCLINES:
-            plot.patches(
-                "xs",
-                "ys",
-                source=source,
-                fill_color=palette[draw_idx],
-                fill_alpha=ISOCLINE_FILL_ALPHA,
-                line_color=stroke_palette[draw_idx],
-                line_alpha=ISOCLINE_STROKE_ALPHA,
-                line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
-            )
+            if use_band_fill:
+                plot.multi_polygons(
+                    xs="xs",
+                    ys="ys",
+                    source=source,
+                    fill_color=palette[draw_idx],
+                    fill_alpha=ISOCLINE_FILL_ALPHA,
+                    line_color=stroke_palette[draw_idx],
+                    line_alpha=ISOCLINE_STROKE_ALPHA,
+                    line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
+                    legend_label=f"{probabilities[source_idx]:.0%} isocline",
+                )
+                legend_added = True
+            else:
+                plot.patches(
+                    "xs",
+                    "ys",
+                    source=source,
+                    fill_color=palette[draw_idx],
+                    fill_alpha=ISOCLINE_FILL_ALPHA,
+                    line_color=stroke_palette[draw_idx],
+                    line_alpha=ISOCLINE_STROKE_ALPHA,
+                    line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
+                    legend_label=f"{probabilities[source_idx]:.0%} isocline",
+                )
+                legend_added = True
         else:
             plot.multi_line(
                 xs="xs",
@@ -1734,12 +2038,12 @@ def build_static_interactive_layout(
                 line_color=stroke_palette[draw_idx],
                 line_width=ISOCLINE_LINE_WIDTH,
                 line_alpha=ISOCLINE_LINE_ALPHA,
-                legend_label=f"HDR {probabilities[source_idx]:.0%}",
+                legend_label=f"{probabilities[source_idx]:.0%} isocline",
             )
+            legend_added = True
 
-    if not FILL_ISOCLINES:
-        plot.legend.location = "top_left"
-        plot.legend.click_policy = "hide"
+    if legend_added:
+        style_map_legend(plot)
 
     base_data = build_point_source_data(points_df, lon, lat, x_merc, y_merc)
     base_arrays = {key: np.asarray(values) for key, values in base_data.items()}
@@ -2007,8 +2311,13 @@ def build_static_interactive_layout(
             contour_transformer,
             knn_scale_override=scale_value,
         )
-        for draw_idx, source_idx in enumerate(render_order):
-            iso_sources[draw_idx].data = updated_data[source_idx]
+        rendered_data = (
+            build_band_sources_from_level_sources(updated_data, render_order)
+            if use_band_fill
+            else [updated_data[source_idx] for source_idx in render_order]
+        )
+        for draw_idx, data in enumerate(rendered_data):
+            iso_sources[draw_idx].data = data
         bandwidth_div.text = format_bandwidth_text(updated_bw)
         hist_source.data = build_histogram_data(mask)
         year_source.data = build_yearly_data(mask)
@@ -2138,6 +2447,7 @@ def build_animation_frames(
     """Compute per-frame KDEs, sources, and monthly histograms."""
     date_series = df["date_dt"]
     frames: list[dict[str, object]] = []
+    render_order = list(range(len(probabilities) - 1, -1, -1))
 
     for start, end in windows:
         mask = (date_series >= start) & (date_series < end)
@@ -2174,6 +2484,9 @@ def build_animation_frames(
             isopleth_sources = [
                 build_isopleth_source_data(paths) for paths in aligned_paths
             ]
+        isopleth_bands = build_band_sources_from_level_sources(
+            isopleth_sources, render_order
+        )
 
         frame_label = format_frame_label(start, end)
         bandwidth_text = format_bandwidth_text(bandwidth)
@@ -2182,6 +2495,7 @@ def build_animation_frames(
             {
                 "points": point_data,
                 "isopleths": isopleth_sources,
+                "isopleth_bands": isopleth_bands,
                 "title": build_map_title_text(species_slug),
                 "frame_label": f"Window: {frame_label}",
                 "bandwidth_text": bandwidth_text,
@@ -2211,6 +2525,7 @@ def plot_animated_map(
     stroke_palette = build_isocline_stroke_palette(
         len(probabilities), fill_palette=palette
     )
+    use_band_fill = FILL_ISOCLINES and use_band_fill_mode()
     render_order = list(range(len(probabilities) - 1, -1, -1))
     hist_max = max(
         (max(frame["histogram"]["count"]) for frame in frames),
@@ -2254,21 +2569,43 @@ def plot_animated_map(
     plot.add_tools(hover)
 
     iso_sources: list[ColumnDataSource] = []
+    legend_added = False
     for draw_idx, source_idx in enumerate(render_order):
         prob = probabilities[source_idx]
-        source = ColumnDataSource(first_frame["isopleths"][source_idx])
+        source_payload = (
+            first_frame["isopleth_bands"][draw_idx]
+            if use_band_fill
+            else first_frame["isopleths"][source_idx]
+        )
+        source = ColumnDataSource(source_payload)
         iso_sources.append(source)
         if FILL_ISOCLINES:
-            plot.patches(
-                "xs",
-                "ys",
-                source=source,
-                fill_color=palette[draw_idx],
-                fill_alpha=ISOCLINE_FILL_ALPHA,
-                line_color=stroke_palette[draw_idx],
-                line_alpha=ISOCLINE_STROKE_ALPHA,
-                line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
-            )
+            if use_band_fill:
+                plot.multi_polygons(
+                    xs="xs",
+                    ys="ys",
+                    source=source,
+                    fill_color=palette[draw_idx],
+                    fill_alpha=ISOCLINE_FILL_ALPHA,
+                    line_color=stroke_palette[draw_idx],
+                    line_alpha=ISOCLINE_STROKE_ALPHA,
+                    line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
+                    legend_label=f"{prob:.0%} isocline",
+                )
+                legend_added = True
+            else:
+                plot.patches(
+                    "xs",
+                    "ys",
+                    source=source,
+                    fill_color=palette[draw_idx],
+                    fill_alpha=ISOCLINE_FILL_ALPHA,
+                    line_color=stroke_palette[draw_idx],
+                    line_alpha=ISOCLINE_STROKE_ALPHA,
+                    line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
+                    legend_label=f"{prob:.0%} isocline",
+                )
+                legend_added = True
         else:
             plot.multi_line(
                 xs="xs",
@@ -2277,12 +2614,12 @@ def plot_animated_map(
                 line_color=stroke_palette[draw_idx],
                 line_width=ISOCLINE_LINE_WIDTH,
                 line_alpha=ISOCLINE_LINE_ALPHA,
-                legend_label=f"HDR {prob:.0%}",
+                legend_label=f"{prob:.0%} isocline",
             )
+            legend_added = True
 
-    if not FILL_ISOCLINES:
-        plot.legend.location = "top_left"
-        plot.legend.click_policy = "hide"
+    if legend_added:
+        style_map_legend(plot)
 
     frame_div = Div(text=first_frame["frame_label"])
     bandwidth_div = Div(text=first_frame["bandwidth_text"])
@@ -2347,6 +2684,7 @@ def plot_animated_map(
             point_source=point_source,
             iso_sources=iso_sources,
             render_order=render_order,
+            use_band_fill=use_band_fill,
             plot=plot,
             frame_div=frame_div,
             bandwidth_div=bandwidth_div,
@@ -2358,8 +2696,12 @@ def plot_animated_map(
             point_source.data = frame.points;
             point_source.change.emit();
             for (let i = 0; i < iso_sources.length; i++) {
-                const source_idx = render_order[i];
-                iso_sources[i].data = frame.isopleths[source_idx];
+                if (use_band_fill) {
+                    iso_sources[i].data = frame.isopleth_bands[i];
+                } else {
+                    const source_idx = render_order[i];
+                    iso_sources[i].data = frame.isopleths[source_idx];
+                }
                 iso_sources[i].change.emit();
             }
             plot.title.text = frame.title;
