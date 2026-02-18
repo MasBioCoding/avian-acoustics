@@ -25,6 +25,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+from bokeh import palettes as bokeh_palettes
 from bokeh.io import output_file, show
 from bokeh.events import DocumentReady
 from bokeh.layouts import column, row
@@ -46,21 +47,37 @@ from bokeh.server.server import Server
 from KDEpy import FFTKDE
 from pyproj import Transformer
 from skimage import measure
-from xyzservices import providers as xyz_providers
+
+try:
+    from xyzservices import providers as xyz_providers
+except Exception:  # noqa: BLE001
+    xyz_providers = None
+
+try:
+    from bokeh.sampledata.world_cities import data as world_cities_data
+except Exception:  # noqa: BLE001
+    world_cities_data = None
+
+try:
+    from scipy.ndimage import binary_closing, binary_fill_holes, gaussian_filter
+except Exception:  # noqa: BLE001
+    binary_closing = None
+    binary_fill_holes = None
+    gaussian_filter = None
 
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
 FILTER_ONE_PER_RECORDIST = True
 
-NUM_ISOCLINES = 4
+NUM_ISOCLINES = 8
 FILL_ISOCLINES = True
-HDR_MIN_PROB = 0.1
+HDR_MIN_PROB = 0.05
 HDR_MAX_PROB = 0.7
 
 DATE_FILTER_MODE = (
@@ -79,7 +96,7 @@ BANDWIDTH_METHOD = "knn"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
-BANDWIDTH_KNN_SCALE = 0.2  # Multiplier for the "knn" bandwidth.
+BANDWIDTH_KNN_SCALE = 0.8  # Multiplier for the "knn" bandwidth.
 BANDWIDTH_GRID_SIZE = 20
 BANDWIDTH_CV_FOLDS = 5
 BANDWIDTH_SEARCH_LOG_MIN = -1.0
@@ -95,11 +112,47 @@ EUROPE_BOUNDS = {
     "lat_max": 72.0,
 }
 
-PLOT_WIDTH = 1500
-PLOT_HEIGHT = 1000
+PLOT_WIDTH = 2400
+PLOT_HEIGHT = 2400
 PLAYLIST_WIDTH = 860
-POINT_SIZE = 8
+POINT_SIZE = 15
 POINT_ALPHA = 0.7
+POINT_LINE_WIDTH = 2.5
+ISOCLINE_FILL_ALPHA = 0.2
+ISOCLINE_STROKE_WIDTH = 2.5  # Set to 0 to remove isocline outlines.
+ISOCLINE_STROKE_COLOR = "#000000"
+ISOCLINE_STROKE_ALPHA = 1
+ISOCLINE_LINE_WIDTH = 10
+ISOCLINE_LINE_ALPHA = 1
+ISOCLINE_COLOR_MODE = "colormap"  # "anchors" or "colormap"
+ISOCLINE_COLOR_ANCHORS = ["#0b1d8b", "#00a878", "#f4d03f", "#e53935"]
+ISOCLINE_COLORMAP_NAME = "cividis"  # Example: "viridis", "magma", "Viridis256"
+ISOCLINE_COLORMAP_REVERSE = True  # True maps first isocline to colormap max.
+ISOCLINE_STROKE_COLOR_MODE = "colormap"  # "single", "match_fill", "anchors", or "colormap"
+ISOCLINE_STROKE_COLOR_ANCHORS = ["#0b1d8b", "#00a878", "#f4d03f", "#e53935"]
+ISOCLINE_STROKE_COLORMAP_NAME = "cividis"
+ISOCLINE_STROKE_COLORMAP_REVERSE = True
+WATER_BACKGROUND_COLOR = "#dcecf7"
+LAND_FILL_COLOR = "#F9EC9C"
+LAND_FILL_ALPHA = 1.0
+MAP_BASE_PROVIDER = "Esri.WorldPhysical"
+MAP_BASE_RETINA = False
+MAP_BASE_ALPHA = 1.0
+MAP_TITLE_FONT_SIZE = "20pt"
+MAP_TITLE_FONT_STYLE = "italic"
+MAP_TITLE_TEXT = "Emberiza calandra"
+MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "14pt"
+MAP_AXIS_LABEL_FONT_SIZE = "16pt"
+LAND_MASK_LON_BINS = 720
+LAND_MASK_LAT_BINS = 360
+LAND_MASK_SMOOTH_SIGMA = 1.6
+LAND_MASK_THRESHOLD_RATIO = 0.006
+LAND_MASK_CLOSING_ITERATIONS = 2
+LAND_MASK_MIN_POINTS = 90
+LAND_MASK_MIN_AREA_DEG2 = 80.0
+MAP_TILE_FALLBACK_PROVIDER = "CartoDB.PositronNoLabels"
+MAP_TILE_FALLBACK_RETINA = True
+MAP_TILE_FALLBACK_ALPHA = 1.0
 MAX_ABS_LAT = 85.0
 MIN_POINTS_FOR_KDE = 5
 YEAR_LABEL_LAT = 70.0
@@ -156,6 +209,8 @@ class Isopleth:
 
 
 _STATIC_HTTP_SERVERS: dict[str, dict[str, Any]] = {}
+_LAND_PATCH_CACHE: tuple[list[list[float]], list[list[float]]] | None = None
+_LAND_PATCH_WARNING_SHOWN = False
 
 
 def detect_species_slug(path: Path) -> str:
@@ -163,6 +218,25 @@ def detect_species_slug(path: Path) -> str:
     if path and path.parent.name:
         return path.parent.name
     return "unknown_species"
+
+
+def format_species_name(species_slug: str) -> str:
+    """Format slug-like species names for display."""
+    cleaned = re.sub(r"[^a-zA-Z0-9_ -]", " ", species_slug or "").strip()
+    tokens = [token for token in re.split(r"[_\s-]+", cleaned) if token]
+    if not tokens:
+        return "Unknown species"
+    genus = tokens[0].capitalize()
+    epithet = [token.lower() for token in tokens[1:]]
+    return " ".join([genus, *epithet]).strip()
+
+
+def build_map_title_text(species_slug: str) -> str:
+    """Build a consistent species-aware map title."""
+    configured = str(MAP_TITLE_TEXT or "").strip()
+    if configured:
+        return configured
+    return format_species_name(species_slug)
 
 
 def detect_root_path(path: Path) -> Path:
@@ -746,7 +820,7 @@ def build_isopleths(
     if num_levels <= 0:
         return []
     x_axis, y_axis, reshaped_values = reshape_kde_arrays(grid, values)
-    probabilities = np.linspace(HDR_MIN_PROB, HDR_MAX_PROB, num_levels)
+    probabilities = get_isocline_probabilities(num_levels)
     levels = compute_hdr_levels(reshaped_values, probabilities)
 
     isopleths: list[Isopleth] = []
@@ -795,24 +869,303 @@ def rgb_to_hex(rgb: Iterable[float]) -> str:
     return "#{:02x}{:02x}{:02x}".format(*clamped)
 
 
-def build_heat_palette(num_colors: int) -> list[str]:
-    """Create a blue-green-yellow-red palette of the requested length."""
-    anchors = ["#0b1d8b", "#00a878", "#f4d03f", "#e53935"]
-    if num_colors <= 1:
-        return [anchors[-1]]
+def interpolate_hex_palette(colors: Sequence[str], num_colors: int) -> list[str]:
+    """Interpolate a list of hex colors to the requested palette length."""
+    if num_colors <= 0:
+        return []
+    if not colors:
+        return ["#000000"] * num_colors
+    if len(colors) == 1:
+        return [colors[0]] * num_colors
+    if num_colors == 1:
+        return [colors[-1]]
 
-    anchor_rgb = np.array([hex_to_rgb(color) for color in anchors], dtype=float)
-    anchor_pos = np.linspace(0, 1, len(anchors))
+    anchor_rgb = np.array([hex_to_rgb(color) for color in colors], dtype=float)
+    anchor_pos = np.linspace(0, 1, len(colors))
     positions = np.linspace(0, 1, num_colors)
 
-    colors: list[str] = []
+    palette: list[str] = []
     for pos in positions:
         idx = int(np.searchsorted(anchor_pos, pos)) - 1
-        idx = max(0, min(idx, len(anchors) - 2))
+        idx = max(0, min(idx, len(colors) - 2))
         frac = (pos - anchor_pos[idx]) / (anchor_pos[idx + 1] - anchor_pos[idx])
         rgb = anchor_rgb[idx] + frac * (anchor_rgb[idx + 1] - anchor_rgb[idx])
-        colors.append(rgb_to_hex(rgb))
-    return colors
+        palette.append(rgb_to_hex(rgb))
+    return palette
+
+
+def resolve_colormap_colors(colormap_name: str) -> list[str] | None:
+    """Resolve a named Bokeh colormap into a list of hex colors."""
+    requested = re.sub(r"\s+", "", str(colormap_name or "")).strip()
+    if not requested:
+        return None
+
+    exact_size_match = re.fullmatch(r"([a-zA-Z_]+)(\d+)", requested)
+    if exact_size_match:
+        family_name = exact_size_match.group(1)
+        size = int(exact_size_match.group(2))
+        for known_family, sizes in bokeh_palettes.all_palettes.items():
+            if known_family.lower() == family_name.lower() and size in sizes:
+                return list(sizes[size])
+
+    for known_family, sizes in bokeh_palettes.all_palettes.items():
+        if known_family.lower() == requested.lower():
+            return list(sizes[max(sizes.keys())])
+
+    for attr in dir(bokeh_palettes):
+        if attr.lower() != requested.lower():
+            continue
+        value = getattr(bokeh_palettes, attr)
+        if isinstance(value, (list, tuple)):
+            return [str(color) for color in value]
+
+    return None
+
+
+def build_heat_palette(num_colors: int) -> list[str]:
+    """Create an isocline palette from configured anchors or a named colormap."""
+    default_anchors = ["#0b1d8b", "#00a878", "#f4d03f", "#e53935"]
+    mode = str(ISOCLINE_COLOR_MODE).strip().lower()
+
+    if mode == "colormap":
+        colors = resolve_colormap_colors(ISOCLINE_COLORMAP_NAME)
+        if colors is None:
+            print(
+                "[WARN] Unknown ISOCLINE_COLORMAP_NAME; falling back to "
+                "ISOCLINE_COLOR_ANCHORS."
+            )
+            anchors = [
+                str(color).strip()
+                for color in ISOCLINE_COLOR_ANCHORS
+                if str(color).strip()
+            ]
+            if len(anchors) < 2:
+                anchors = default_anchors
+            return interpolate_hex_palette(anchors, num_colors)
+
+        if ISOCLINE_COLORMAP_REVERSE:
+            colors = list(reversed(colors))
+        return interpolate_hex_palette(colors, num_colors)
+
+    if mode not in {"anchors", "colormap"}:
+        print("[WARN] ISOCLINE_COLOR_MODE must be 'anchors' or 'colormap'; using anchors.")
+
+    anchors = [
+        str(color).strip() for color in ISOCLINE_COLOR_ANCHORS if str(color).strip()
+    ]
+    if len(anchors) < 2:
+        print("[WARN] ISOCLINE_COLOR_ANCHORS needs >=2 colors; using defaults.")
+        anchors = default_anchors
+    return interpolate_hex_palette(anchors, num_colors)
+
+
+def build_isocline_stroke_palette(
+    num_colors: int, fill_palette: Sequence[str] | None = None
+) -> list[str]:
+    """Create a stroke palette for isocline outlines."""
+    if num_colors <= 0:
+        return []
+    mode = str(ISOCLINE_STROKE_COLOR_MODE).strip().lower()
+
+    if mode == "single":
+        return [ISOCLINE_STROKE_COLOR] * num_colors
+    if mode == "match_fill":
+        if fill_palette is not None and len(fill_palette) == num_colors:
+            return [str(color) for color in fill_palette]
+        return build_heat_palette(num_colors)
+    if mode == "anchors":
+        anchors = [
+            str(color).strip()
+            for color in ISOCLINE_STROKE_COLOR_ANCHORS
+            if str(color).strip()
+        ]
+        if len(anchors) < 2:
+            print(
+                "[WARN] ISOCLINE_STROKE_COLOR_ANCHORS needs >=2 colors; using "
+                "ISOCLINE_STROKE_COLOR."
+            )
+            return [ISOCLINE_STROKE_COLOR] * num_colors
+        return interpolate_hex_palette(anchors, num_colors)
+    if mode == "colormap":
+        colors = resolve_colormap_colors(ISOCLINE_STROKE_COLORMAP_NAME)
+        if colors is None:
+            print(
+                "[WARN] Unknown ISOCLINE_STROKE_COLORMAP_NAME; using "
+                "ISOCLINE_STROKE_COLOR."
+            )
+            return [ISOCLINE_STROKE_COLOR] * num_colors
+        if ISOCLINE_STROKE_COLORMAP_REVERSE:
+            colors = list(reversed(colors))
+        return interpolate_hex_palette(colors, num_colors)
+
+    print(
+        "[WARN] ISOCLINE_STROKE_COLOR_MODE must be 'single', 'match_fill', "
+        "'anchors', or 'colormap'; using ISOCLINE_STROKE_COLOR."
+    )
+    return [ISOCLINE_STROKE_COLOR] * num_colors
+
+
+def get_isocline_probabilities(num_levels: int) -> np.ndarray:
+    """Return the HDR probabilities used to generate isoclines."""
+    if num_levels <= 0:
+        return np.array([], dtype=float)
+    return np.linspace(HDR_MIN_PROB, HDR_MAX_PROB, num_levels)
+
+
+def log_isocline_percentages(num_levels: int) -> None:
+    """Print exact percentages for the configured isocline levels."""
+    probabilities = get_isocline_probabilities(num_levels)
+    if probabilities.size == 0:
+        print("[INFO] No isoclines configured (NUM_ISOCLINES <= 0).")
+        return
+    percent_text = ", ".join(f"{probability * 100:.2f}%" for probability in probabilities)
+    print(f"[INFO] Isoclines represent HDR levels: {percent_text}")
+
+
+def polygon_area_degrees(lon: np.ndarray, lat: np.ndarray) -> float:
+    """Approximate polygon area in lon/lat degree space."""
+    if len(lon) < 3 or len(lat) < 3:
+        return 0.0
+    return 0.5 * float(
+        np.abs(np.dot(lon, np.roll(lat, -1)) - np.dot(lat, np.roll(lon, -1)))
+    )
+
+
+def build_land_patches_mercator() -> tuple[list[list[float]], list[list[float]]]:
+    """Create simplified global land patches from city density."""
+    if (
+        world_cities_data is None
+        or gaussian_filter is None
+        or binary_closing is None
+        or binary_fill_holes is None
+    ):
+        return [], []
+
+    lon = pd.to_numeric(world_cities_data["lng"], errors="coerce").to_numpy(dtype=float)
+    lat = pd.to_numeric(world_cities_data["lat"], errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(lon) & np.isfinite(lat) & (np.abs(lat) <= MAX_ABS_LAT)
+    if not valid.any():
+        return [], []
+    lon = lon[valid]
+    lat = lat[valid]
+
+    lon_edges = np.linspace(-180.0, 180.0, LAND_MASK_LON_BINS + 1)
+    lat_edges = np.linspace(-MAX_ABS_LAT, MAX_ABS_LAT, LAND_MASK_LAT_BINS + 1)
+    density, _, _ = np.histogram2d(lat, lon, bins=[lat_edges, lon_edges])
+    smoothed = gaussian_filter(
+        density,
+        sigma=LAND_MASK_SMOOTH_SIGMA,
+        mode=("nearest", "wrap"),
+    )
+    max_density = float(smoothed.max())
+    if max_density <= 0:
+        return [], []
+
+    threshold = max_density * LAND_MASK_THRESHOLD_RATIO
+    land_mask = smoothed >= threshold
+    land_mask = binary_closing(land_mask, iterations=LAND_MASK_CLOSING_ITERATIONS)
+    land_mask = binary_fill_holes(land_mask)
+
+    contours = measure.find_contours(land_mask.astype(float), level=0.5)
+    if not contours:
+        return [], []
+
+    lon_axis = (lon_edges[:-1] + lon_edges[1:]) / 2.0
+    lat_axis = (lat_edges[:-1] + lat_edges[1:]) / 2.0
+    row_axis = np.arange(len(lat_axis))
+    col_axis = np.arange(len(lon_axis))
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+
+    xs_list: list[list[float]] = []
+    ys_list: list[list[float]] = []
+    for contour in contours:
+        if len(contour) < LAND_MASK_MIN_POINTS:
+            continue
+        rows = contour[:, 0]
+        cols = contour[:, 1]
+        path_lat = np.interp(rows, row_axis, lat_axis)
+        path_lon = np.interp(cols, col_axis, lon_axis)
+        if polygon_area_degrees(path_lon, path_lat) < LAND_MASK_MIN_AREA_DEG2:
+            continue
+        if not np.allclose(path_lon[0], path_lon[-1]) or not np.allclose(
+            path_lat[0], path_lat[-1]
+        ):
+            path_lon = np.append(path_lon, path_lon[0])
+            path_lat = np.append(path_lat, path_lat[0])
+        path_x, path_y = transformer.transform(path_lon, path_lat)
+        xs_list.append(path_x.astype(float).tolist())
+        ys_list.append(path_y.astype(float).tolist())
+
+    return xs_list, ys_list
+
+
+def get_land_patches_mercator() -> tuple[list[list[float]], list[list[float]]]:
+    """Return cached land patches in Web Mercator coordinates."""
+    global _LAND_PATCH_CACHE
+    if _LAND_PATCH_CACHE is None:
+        _LAND_PATCH_CACHE = build_land_patches_mercator()
+    return _LAND_PATCH_CACHE
+
+
+def resolve_tile_provider(path: str) -> Any | None:
+    """Resolve a dotted xyzservices provider path."""
+    if xyz_providers is None or not path:
+        return None
+    provider: Any = xyz_providers
+    for part in path.split("."):
+        provider = getattr(provider, part, None)
+        if provider is None:
+            return None
+    return provider
+
+
+def style_map_figure(plot: Any) -> None:
+    """Apply shared background styling and basemap."""
+    global _LAND_PATCH_WARNING_SHOWN
+    plot.grid.visible = False
+    plot.background_fill_color = WATER_BACKGROUND_COLOR
+    plot.border_fill_color = WATER_BACKGROUND_COLOR
+    plot.axis.major_label_text_font_size = MAP_AXIS_MAJOR_LABEL_FONT_SIZE
+    plot.axis.axis_label_text_font_size = MAP_AXIS_LABEL_FONT_SIZE
+    plot.title.text_font_size = MAP_TITLE_FONT_SIZE
+    plot.title.text_font_style = MAP_TITLE_FONT_STYLE
+
+    provider = resolve_tile_provider(MAP_BASE_PROVIDER)
+    if provider is not None:
+        tile_renderer = plot.add_tile(provider, retina=MAP_BASE_RETINA)
+        tile_renderer.alpha = MAP_BASE_ALPHA
+        return
+
+    land_xs, land_ys = get_land_patches_mercator()
+    if land_xs:
+        plot.patches(
+            land_xs,
+            land_ys,
+            fill_color=LAND_FILL_COLOR,
+            fill_alpha=LAND_FILL_ALPHA,
+            line_color=None,
+        )
+        return
+
+    fallback_provider = resolve_tile_provider(MAP_TILE_FALLBACK_PROVIDER)
+    if fallback_provider is not None:
+        tile_renderer = plot.add_tile(
+            fallback_provider, retina=MAP_TILE_FALLBACK_RETINA
+        )
+        tile_renderer.alpha = MAP_TILE_FALLBACK_ALPHA
+        if not _LAND_PATCH_WARNING_SHOWN:
+            print(
+                "[WARN] Primary basemap unavailable; using fallback basemap "
+                f"'{MAP_TILE_FALLBACK_PROVIDER}'."
+            )
+            _LAND_PATCH_WARNING_SHOWN = True
+        return
+
+    if not _LAND_PATCH_WARNING_SHOWN:
+        print(
+            "[WARN] No basemap available (primary/fallback); rendering water-only background."
+        )
+        _LAND_PATCH_WARNING_SHOWN = True
 
 
 def compute_bounds(
@@ -1202,6 +1555,7 @@ def plot_map(
     bandwidth: float,
     output_html: Path | None = None,
     title: str | None = None,
+    species_slug: str = "unknown_species",
 ) -> None:
     """Render the map, points, and KDE isopleths."""
     point_transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
@@ -1214,7 +1568,7 @@ def plot_map(
         np.array(x_merc), np.array(y_merc), projected_isopleths
     )
 
-    plot_title = title or "Ingroup KDE Isoclines (Web Mercator)"
+    plot_title = title or build_map_title_text(species_slug)
     plot = figure(
         title=plot_title,
         x_axis_type="mercator",
@@ -1226,33 +1580,41 @@ def plot_map(
         x_range=x_range,
         y_range=y_range,
     )
-    plot.add_tile(xyz_providers.CartoDB.Positron)
+    style_map_figure(plot)
 
     palette = build_heat_palette(len(projected_isopleths))
+    stroke_palette = build_isocline_stroke_palette(
+        len(projected_isopleths), fill_palette=palette
+    )
     ordered_isopleths = sorted(projected_isopleths, key=lambda iso: iso.level)
 
     if FILL_ISOCLINES:
-        for iso, color in zip(ordered_isopleths, palette):
+        for iso, fill_color, stroke_color in zip(
+            ordered_isopleths, palette, stroke_palette
+        ):
             xs_list = [path[:, 0].tolist() for path in iso.paths]
             ys_list = [path[:, 1].tolist() for path in iso.paths]
             if xs_list:
                 plot.patches(
                     xs_list,
                     ys_list,
-                    fill_color=color,
-                    fill_alpha=0.25,
-                    line_width=0,
+                    fill_color=fill_color,
+                    fill_alpha=ISOCLINE_FILL_ALPHA,
+                    line_color=stroke_color,
+                    line_alpha=ISOCLINE_STROKE_ALPHA,
+                    line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
                 )
     else:
-        for iso, color in zip(ordered_isopleths, palette):
+        for iso, stroke_color in zip(ordered_isopleths, stroke_palette):
             xs_list = [path[:, 0].tolist() for path in iso.paths]
             ys_list = [path[:, 1].tolist() for path in iso.paths]
             if xs_list:
                 plot.multi_line(
                     xs=xs_list,
                     ys=ys_list,
-                    line_color=color,
-                    line_width=2,
+                    line_color=stroke_color,
+                    line_width=ISOCLINE_LINE_WIDTH,
+                    line_alpha=ISOCLINE_LINE_ALPHA,
                     legend_label=f"HDR {iso.probability:.0%}",
                 )
 
@@ -1266,7 +1628,7 @@ def plot_map(
         color="white",
         alpha=POINT_ALPHA,
         line_color="black",
-        line_width=0.5,
+        line_width=POINT_LINE_WIDTH,
         source=source,
     )
     hover = HoverTool(
@@ -1320,7 +1682,7 @@ def build_static_interactive_layout(
         spectrogram_dir = Path(".")
     x_merc, y_merc = project_points(lon, lat, point_transformer)
 
-    probabilities = np.linspace(HDR_MIN_PROB, HDR_MAX_PROB, NUM_ISOCLINES).tolist()
+    probabilities = get_isocline_probabilities(NUM_ISOCLINES).tolist()
     source_data, projected_isopleths, bandwidth = compute_isopleth_sources(
         points_eq,
         probabilities,
@@ -1332,7 +1694,7 @@ def build_static_interactive_layout(
     )
 
     plot = figure(
-        title="Ingroup KDE Isoclines (Web Mercator)",
+        title=build_map_title_text(species_slug),
         x_axis_type="mercator",
         y_axis_type="mercator",
         match_aspect=True,
@@ -1342,9 +1704,12 @@ def build_static_interactive_layout(
         x_range=x_range,
         y_range=y_range,
     )
-    plot.add_tile(xyz_providers.CartoDB.Positron)
+    style_map_figure(plot)
 
     palette = build_heat_palette(len(probabilities))
+    stroke_palette = build_isocline_stroke_palette(
+        len(probabilities), fill_palette=palette
+    )
     render_order = list(range(len(probabilities) - 1, -1, -1))
     iso_sources: list[ColumnDataSource] = []
     for draw_idx, source_idx in enumerate(render_order):
@@ -1356,16 +1721,19 @@ def build_static_interactive_layout(
                 "ys",
                 source=source,
                 fill_color=palette[draw_idx],
-                fill_alpha=0.25,
-                line_width=0,
+                fill_alpha=ISOCLINE_FILL_ALPHA,
+                line_color=stroke_palette[draw_idx],
+                line_alpha=ISOCLINE_STROKE_ALPHA,
+                line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
             )
         else:
             plot.multi_line(
                 xs="xs",
                 ys="ys",
                 source=source,
-                line_color=palette[draw_idx],
-                line_width=2,
+                line_color=stroke_palette[draw_idx],
+                line_width=ISOCLINE_LINE_WIDTH,
+                line_alpha=ISOCLINE_LINE_ALPHA,
                 legend_label=f"HDR {probabilities[source_idx]:.0%}",
             )
 
@@ -1441,7 +1809,7 @@ def build_static_interactive_layout(
         color="white",
         alpha=POINT_ALPHA,
         line_color="black",
-        line_width=0.5,
+        line_width=POINT_LINE_WIDTH,
         selection_fill_color="black",
         selection_line_color="black",
         selection_line_width=2,
@@ -1765,6 +2133,7 @@ def build_animation_frames(
     point_transformer: Transformer,
     equal_area: Transformer,
     contour_transformer: Transformer,
+    species_slug: str,
 ) -> list[dict[str, object]]:
     """Compute per-frame KDEs, sources, and monthly histograms."""
     date_series = df["date_dt"]
@@ -1813,7 +2182,7 @@ def build_animation_frames(
             {
                 "points": point_data,
                 "isopleths": isopleth_sources,
-                "title": f"Ingroup KDE (Window {frame_label})",
+                "title": build_map_title_text(species_slug),
                 "frame_label": f"Window: {frame_label}",
                 "bandwidth_text": bandwidth_text,
                 "year_text": f"{start.year}",
@@ -1831,6 +2200,7 @@ def plot_animated_map(
     x_range: Range1d,
     y_range: Range1d,
     output_html: Path,
+    species_slug: str,
 ) -> None:
     """Render an animated KDE map with a slider and monthly histogram."""
     if not frames:
@@ -1838,6 +2208,9 @@ def plot_animated_map(
 
     first_frame = frames[0]
     palette = build_heat_palette(len(probabilities))
+    stroke_palette = build_isocline_stroke_palette(
+        len(probabilities), fill_palette=palette
+    )
     render_order = list(range(len(probabilities) - 1, -1, -1))
     hist_max = max(
         (max(frame["histogram"]["count"]) for frame in frames),
@@ -1856,7 +2229,7 @@ def plot_animated_map(
         x_range=x_range,
         y_range=y_range,
     )
-    plot.add_tile(xyz_providers.CartoDB.Positron)
+    style_map_figure(plot)
 
     point_source = ColumnDataSource(first_frame["points"])
     point_renderer = plot.scatter(
@@ -1866,7 +2239,7 @@ def plot_animated_map(
         color="white",
         alpha=POINT_ALPHA,
         line_color="black",
-        line_width=0.5,
+        line_width=POINT_LINE_WIDTH,
         source=point_source,
     )
     hover = HoverTool(
@@ -1891,16 +2264,19 @@ def plot_animated_map(
                 "ys",
                 source=source,
                 fill_color=palette[draw_idx],
-                fill_alpha=0.25,
-                line_width=0,
+                fill_alpha=ISOCLINE_FILL_ALPHA,
+                line_color=stroke_palette[draw_idx],
+                line_alpha=ISOCLINE_STROKE_ALPHA,
+                line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
             )
         else:
             plot.multi_line(
                 xs="xs",
                 ys="ys",
                 source=source,
-                line_color=palette[draw_idx],
-                line_width=2,
+                line_color=stroke_palette[draw_idx],
+                line_width=ISOCLINE_LINE_WIDTH,
+                line_alpha=ISOCLINE_LINE_ALPHA,
                 legend_label=f"HDR {prob:.0%}",
             )
 
@@ -2030,7 +2406,7 @@ def plot_animated_map(
         row(play_button, slider),
         row(frame_div, bandwidth_div),
     )
-    output_file(output_html, title="Ingroup KDE Animation")
+    output_file(output_html, title=f"{build_map_title_text(species_slug)} animation")
     show(layout)
 
     print(f"[INFO] Animated output written to {output_html}.")
@@ -2064,6 +2440,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def run_static_map() -> None:
     """Render a static KDE map."""
+    log_isocline_percentages(NUM_ISOCLINES)
+    species_slug = detect_species_slug(INFERENCE_CSV)
     dated = prepare_base_dataframe()
     filtered = filter_top_logit_per_recordist(dated)
     points_df, lon, lat = prepare_points(filtered)
@@ -2079,11 +2457,19 @@ def run_static_map() -> None:
         grid, values, bandwidth = compute_kde(points_eq)
         isopleths = build_isopleths(grid, values, NUM_ISOCLINES)
 
-    plot_map(points_df, lon, lat, isopleths, bandwidth)
+    plot_map(
+        points_df,
+        lon,
+        lat,
+        isopleths,
+        bandwidth,
+        species_slug=species_slug,
+    )
 
 
 def run_interactive_map() -> None:
     """Launch a Bokeh server with interactive KDE controls."""
+    log_isocline_percentages(NUM_ISOCLINES)
     inference_df = prepare_inference_table(INFERENCE_CSV)
     logit_range = extract_logit_range(inference_df["logits"])
     metadata_df = prepare_metadata_table(METADATA_CSV)
@@ -2144,7 +2530,7 @@ def run_interactive_map() -> None:
             playlist_max_items=PLAYLIST_MAX_ITEMS,
         )
         doc.add_root(layout)
-        doc.title = "Ingroup KDE Isoclines"
+        doc.title = build_map_title_text(species_slug)
         doc.js_on_event(
             DocumentReady,
             CustomJS(
@@ -2188,6 +2574,8 @@ def run_interactive_map() -> None:
 
 def run_animated_map() -> None:
     """Render an animated KDE map with month-by-month frames."""
+    log_isocline_percentages(NUM_ISOCLINES)
+    species_slug = detect_species_slug(INFERENCE_CSV)
     dated = prepare_base_dataframe()
     dated = ensure_date_column(dated)
     valid_mask = dated["date_dt"].notna()
@@ -2204,7 +2592,7 @@ def run_animated_map() -> None:
     if not windows:
         raise SystemExit("No animation windows could be built from the data.")
 
-    probabilities = np.linspace(HDR_MIN_PROB, HDR_MAX_PROB, NUM_ISOCLINES).tolist()
+    probabilities = get_isocline_probabilities(NUM_ISOCLINES).tolist()
     point_transformer = Transformer.from_crs(
         "EPSG:4326", "EPSG:3857", always_xy=True
     )
@@ -2232,9 +2620,10 @@ def run_animated_map() -> None:
         point_transformer,
         equal_area,
         contour_transformer,
+        species_slug,
     )
     plot_animated_map(
-        frames, probabilities, x_range, y_range, ANIMATION_OUTPUT_HTML
+        frames, probabilities, x_range, y_range, ANIMATION_OUTPUT_HTML, species_slug
     )
 
 
