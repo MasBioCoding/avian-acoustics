@@ -78,8 +78,8 @@ FILTER_ONE_PER_RECORDIST = True
 NUM_ISOCLINES = 5
 FILL_ISOCLINES = True
 HDR_MIN_PROB = 0.1
-HDR_MAX_PROB = 0.89
-ISOCLINE_PROB_ROUND_STEP = 0.03  # Set <= 0 to disable interior rounding.
+HDR_MAX_PROB = 0.7
+ISOCLINE_PROB_ROUND_STEP = 0.05 # Set <= 0 to disable interior rounding.
 
 DATE_FILTER_MODE = (
     "range"  # "all", "recent", "exclude_recent", or "range"
