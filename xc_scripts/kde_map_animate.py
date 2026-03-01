@@ -75,7 +75,7 @@ ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
 FILTER_ONE_PER_RECORDIST = True
 
-NUM_ISOCLINES = 5
+NUM_ISOCLINES = 6
 FILL_ISOCLINES = True
 HDR_MIN_PROB = 0.1
 HDR_MAX_PROB = 0.7
@@ -121,7 +121,7 @@ POINT_ALPHA = 0.7
 POINT_LINE_WIDTH = 2.5
 ISOCLINE_FILL_ALPHA = 0.4
 ISOCLINE_FILL_MODE = "bands"  # "bands" (non-overlapping) or "stacked"
-ISOCLINE_STROKE_WIDTH = 1  # Set to 0 to remove isocline outlines.
+ISOCLINE_STROKE_WIDTH = 1.4  # Set to 0 to remove isocline outlines.
 ISOCLINE_STROKE_COLOR = "#000000"
 ISOCLINE_STROKE_ALPHA = 1
 ISOCLINE_LINE_WIDTH = 10
@@ -158,6 +158,7 @@ LAND_MASK_THRESHOLD_RATIO = 0.006
 LAND_MASK_CLOSING_ITERATIONS = 2
 LAND_MASK_MIN_POINTS = 90
 LAND_MASK_MIN_AREA_DEG2 = 80.0
+# https://leaflet-extras.github.io/leaflet-providers/preview/
 MAP_TILE_FALLBACK_PROVIDER = "CartoDB.PositronNoLabels"
 MAP_TILE_FALLBACK_RETINA = True
 MAP_TILE_FALLBACK_ALPHA = 1.0
@@ -179,11 +180,37 @@ MONTH_LABELS = [
     "Nov",
     "Dec",
 ]
-HISTOGRAM_HEIGHT = 240
-HISTOGRAM_BAR_COLOR = "#3b6ea5"
-HISTOGRAM_ALPHA = 0.85
 HISTOGRAM_Y_PADDING = 1.1
-YEARLY_HEIGHT = 190
+
+# Monthly sample size
+MONTHLY_SAMPLE_TITLE_TEXT = "Monthly sample size"
+MONTHLY_SAMPLE_WIDTH = 700
+MONTHLY_SAMPLE_HEIGHT = 300
+MONTHLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
+MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
+MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
+MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE = "normal"
+MONTHLY_SAMPLE_BACKGROUND_COLOR = "#404788FF"
+MONTHLY_SAMPLE_BORDER_COLOR = "#FFFFFF"
+MONTHLY_SAMPLE_DATAPOINT_COLOR = "#73D055FF"
+MONTHLY_SAMPLE_DATAPOINT_ALPHA = 0.85
+
+
+# Yearly sample size
+YEARLY_SAMPLE_TITLE_TEXT = "Yearly sample size"
+YEARLY_SAMPLE_WIDTH = 700
+YEARLY_SAMPLE_HEIGHT = 300
+YEARLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
+YEARLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
+YEARLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
+YEARLY_SAMPLE_AXIS_LABEL_FONT_STYLE = "normal"
+YEARLY_SAMPLE_BACKGROUND_COLOR = "#404788FF"
+YEARLY_SAMPLE_BORDER_COLOR = "#FFFFFF"
+YEARLY_SAMPLE_LINE_COLOR = "#73D055FF"
+YEARLY_SAMPLE_POINT_COLOR = "#73D055FF"
+YEARLY_SAMPLE_ALPHA = 0.85
+YEARLY_SAMPLE_LINE_WIDTH = 5
+YEARLY_SAMPLE_POINT_SIZE = 10
 
 ANIMATION_WINDOW_MONTHS = 12  # 1-year window per frame.
 ANIMATION_STEP_MONTHS = 1  # Advance one month per frame.
@@ -2156,11 +2183,11 @@ def build_static_interactive_layout(
 
     hist_source = ColumnDataSource(build_histogram_data(build_logit_mask()))
     hist_plot = figure(
-        title="Monthly observation counts",
+        title=MONTHLY_SAMPLE_TITLE_TEXT,
         x_range=MONTH_LABELS,
         y_range=(0, hist_max * HISTOGRAM_Y_PADDING),
-        width=PLOT_WIDTH,
-        height=HISTOGRAM_HEIGHT,
+        width=MONTHLY_SAMPLE_WIDTH,
+        height=MONTHLY_SAMPLE_HEIGHT,
         tools="",
         toolbar_location=None,
     )
@@ -2169,20 +2196,33 @@ def build_static_interactive_layout(
         top="count",
         width=0.9,
         source=hist_source,
-        color=HISTOGRAM_BAR_COLOR,
-        alpha=HISTOGRAM_ALPHA,
+        color=MONTHLY_SAMPLE_DATAPOINT_COLOR,
+        alpha=MONTHLY_SAMPLE_DATAPOINT_ALPHA,
     )
     hist_plot.xgrid.grid_line_color = None
+    hist_plot.title.text_font_size = MONTHLY_SAMPLE_TITLE_FONT_SIZE
+    hist_plot.background_fill_color = MONTHLY_SAMPLE_BACKGROUND_COLOR
+    hist_plot.border_fill_color = MONTHLY_SAMPLE_BORDER_COLOR
     hist_plot.yaxis.axis_label = "Observations"
     hist_plot.xaxis.axis_label = "Month"
+    hist_plot.xaxis.axis_label_text_font_size = MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    hist_plot.yaxis.axis_label_text_font_size = MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    hist_plot.xaxis.axis_label_text_font_style = MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    hist_plot.yaxis.axis_label_text_font_style = MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    hist_plot.xaxis.major_label_text_font_size = (
+        MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    hist_plot.yaxis.major_label_text_font_size = (
+        MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
 
     year_source = ColumnDataSource(build_yearly_data(build_logit_mask()))
     year_plot = figure(
-        title="Yearly sample size",
+        title=YEARLY_SAMPLE_TITLE_TEXT,
         x_range=year_labels,
         y_range=(0, year_max * HISTOGRAM_Y_PADDING),
-        width=int((PLOT_WIDTH + PLAYLIST_WIDTH) / 3),
-        height=YEARLY_HEIGHT,
+        width=YEARLY_SAMPLE_WIDTH,
+        height=YEARLY_SAMPLE_HEIGHT,
         tools="",
         toolbar_location=None,
     )
@@ -2190,21 +2230,34 @@ def build_static_interactive_layout(
         x="year",
         y="count",
         source=year_source,
-        line_color=HISTOGRAM_BAR_COLOR,
-        line_width=2,
-        alpha=HISTOGRAM_ALPHA,
+        line_color=YEARLY_SAMPLE_LINE_COLOR,
+        line_width=YEARLY_SAMPLE_LINE_WIDTH,
+        alpha=YEARLY_SAMPLE_ALPHA,
     )
     year_plot.circle(
         x="year",
         y="count",
         source=year_source,
-        size=6,
-        color=HISTOGRAM_BAR_COLOR,
-        alpha=HISTOGRAM_ALPHA,
+        size=YEARLY_SAMPLE_POINT_SIZE,
+        color=YEARLY_SAMPLE_POINT_COLOR,
+        alpha=YEARLY_SAMPLE_ALPHA,
     )
     year_plot.xgrid.grid_line_color = None
+    year_plot.title.text_font_size = YEARLY_SAMPLE_TITLE_FONT_SIZE
+    year_plot.background_fill_color = YEARLY_SAMPLE_BACKGROUND_COLOR
+    year_plot.border_fill_color = YEARLY_SAMPLE_BORDER_COLOR
     year_plot.yaxis.axis_label = "Observations"
     year_plot.xaxis.axis_label = "Year"
+    year_plot.xaxis.axis_label_text_font_size = YEARLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    year_plot.yaxis.axis_label_text_font_size = YEARLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    year_plot.xaxis.axis_label_text_font_style = YEARLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    year_plot.yaxis.axis_label_text_font_style = YEARLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    year_plot.xaxis.major_label_text_font_size = (
+        YEARLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    year_plot.yaxis.major_label_text_font_size = (
+        YEARLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
 
     def update_points(*, update_playlist: bool = True) -> np.ndarray:
         mask = build_logit_mask()
@@ -2655,11 +2708,11 @@ def plot_animated_map(
     plot.add_layout(year_label)
     hist_source = ColumnDataSource(first_frame["histogram"])
     hist_plot = figure(
-        title="Monthly observation counts",
+        title=MONTHLY_SAMPLE_TITLE_TEXT,
         x_range=MONTH_LABELS,
         y_range=(0, hist_max * HISTOGRAM_Y_PADDING),
-        width=PLOT_WIDTH,
-        height=HISTOGRAM_HEIGHT,
+        width=MONTHLY_SAMPLE_WIDTH,
+        height=MONTHLY_SAMPLE_HEIGHT,
         tools="",
         toolbar_location=None,
     )
@@ -2668,12 +2721,25 @@ def plot_animated_map(
         top="count",
         width=0.9,
         source=hist_source,
-        color=HISTOGRAM_BAR_COLOR,
-        alpha=HISTOGRAM_ALPHA,
+        color=MONTHLY_SAMPLE_DATAPOINT_COLOR,
+        alpha=MONTHLY_SAMPLE_DATAPOINT_ALPHA,
     )
     hist_plot.xgrid.grid_line_color = None
+    hist_plot.title.text_font_size = MONTHLY_SAMPLE_TITLE_FONT_SIZE
+    hist_plot.background_fill_color = MONTHLY_SAMPLE_BACKGROUND_COLOR
+    hist_plot.border_fill_color = MONTHLY_SAMPLE_BORDER_COLOR
     hist_plot.yaxis.axis_label = "Observations"
     hist_plot.xaxis.axis_label = "Month"
+    hist_plot.xaxis.axis_label_text_font_size = MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    hist_plot.yaxis.axis_label_text_font_size = MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    hist_plot.xaxis.axis_label_text_font_style = MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    hist_plot.yaxis.axis_label_text_font_style = MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    hist_plot.xaxis.major_label_text_font_size = (
+        MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    hist_plot.yaxis.major_label_text_font_size = (
+        MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
     slider = Slider(
         start=0, end=len(frames) - 1, value=0, step=1, title="Frame"
     )
