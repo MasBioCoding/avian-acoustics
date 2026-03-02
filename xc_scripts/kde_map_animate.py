@@ -68,8 +68,8 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
@@ -142,7 +142,7 @@ MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "20pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Emberiza calandra"
+MAP_TITLE_TEXT = "Phylloscopus collybita"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
@@ -184,14 +184,14 @@ HISTOGRAM_Y_PADDING = 1.1
 
 # Monthly sample size
 MONTHLY_SAMPLE_TITLE_TEXT = "Monthly sample size"
-MONTHLY_SAMPLE_WIDTH = 700
-MONTHLY_SAMPLE_HEIGHT = 300
+MONTHLY_SAMPLE_WIDTH = 2400
+MONTHLY_SAMPLE_HEIGHT = 500
 MONTHLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
 MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
 MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
 MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE = "normal"
 MONTHLY_SAMPLE_BACKGROUND_COLOR = "#404788FF"
-MONTHLY_SAMPLE_BORDER_COLOR = "#FFFFFF"
+MONTHLY_SAMPLE_BORDER_COLOR = "#dcecf7"
 MONTHLY_SAMPLE_DATAPOINT_COLOR = "#73D055FF"
 MONTHLY_SAMPLE_DATAPOINT_ALPHA = 0.85
 
@@ -215,6 +215,7 @@ YEARLY_SAMPLE_POINT_SIZE = 10
 ANIMATION_WINDOW_MONTHS = 12  # 1-year window per frame.
 ANIMATION_STEP_MONTHS = 1  # Advance one month per frame.
 ANIMATION_PLAY_INTERVAL_MS = 100  # Playback interval for the HTML animation.
+ANIMATION_YEAR_LABEL_FONT_SIZE = "128pt"
 
 # Media playlist configuration (interactive mode only)
 SPECTROGRAM_IMAGE_FORMAT = "png"
@@ -2391,9 +2392,9 @@ def build_static_interactive_layout(
         row(logit_slider, count_div),
         status_div,
     )
-    map_panel = column(plot, hist_plot, controls)
+    map_panel = column(plot, row(hist_plot, year_plot), controls)
     playlist_panel = column(playlist_title, playlist_div, width=PLAYLIST_WIDTH)
-    layout = column(row(map_panel, playlist_panel), year_plot)
+    layout = row(map_panel, playlist_panel)
     return layout, point_source, playlist_div
 
 
@@ -2697,7 +2698,7 @@ def plot_animated_map(
         x_units="data",
         y_units="data",
         text=first_frame["year_text"],
-        text_font_size="32pt",
+        text_font_size=ANIMATION_YEAR_LABEL_FONT_SIZE,
         text_font_style="bold",
         text_color="#111111",
         text_align="left",
