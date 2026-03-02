@@ -41,6 +41,10 @@ Usage:
         --config "xc_configs_perch/config_phylloscopus_trochilus.yaml" \
         --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/phylloscopus_trochilus"
         
+    python xc_scripts/filter_metadata_bbox.py --metadata "/Volumes/Z Slim/zslim_birdcluster/embeddings/parus_major/metadata.csv" \
+        --config "xc_configs_perch/config_parus_major.yaml" \
+        --clips-dir "/Volumes/Z Slim/zslim_birdcluster/clips/parus_major"
+        
         
         
         
