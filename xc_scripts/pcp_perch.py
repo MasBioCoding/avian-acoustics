@@ -3,14 +3,14 @@ Prototype Bokeh application for selecting species before building a
 parallel-coordinate plot with optional HDBSCAN coloring plus a
 playlist preview with audio and spectrograms, including energy
 distance range filtering and a quantile strip view.
-
+    
 Run with:
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_chloris_chloris.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_carduelis_carduelis.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_linaria_cannabina.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_emberiza_calandra.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_curruca_communis.yaml
-    
+
 """
 
 from __future__ import annotations
@@ -83,6 +83,16 @@ HDBSCAN_PALETTE = [
 ]
 HDBSCAN_NOISE_LABEL = "Noise"
 HDBSCAN_NOISE_COLOR = "#8c8c8c"
+HDB_ANNOTATION_COLUMNS = (
+    "id",
+    "window_id",
+    "label",
+    "label_type",
+    "provenance",
+    "timestamp",
+)
+HDB_ANNOTATION_POSITIVE = "LabelType.POSITIVE"
+HDB_ANNOTATION_NEGATIVE = "LabelType.NEGATIVE"
 DEFAULT_UMAP_COMPONENTS = 6
 DEFAULT_UMAP_NEIGHBORS = 15
 DEFAULT_UMAP_MIN_DIST = 0.0
@@ -621,6 +631,48 @@ def build_ingroup_lookup(ingroup_df: pd.DataFrame) -> pd.DataFrame:
     return working[["window_id", "__key__"]].drop_duplicates(subset=["window_id"])
 
 
+def build_window_ids_by_key(ingroup_df: pd.DataFrame) -> dict[str, list[str]]:
+    """Return key-to-window-id mapping built from ingroup metadata."""
+
+    window_col = resolve_window_id_column(ingroup_df)
+    if not window_col:
+        raise ValueError(
+            "Ingroup mapping must include source_window_id/window_id column."
+        )
+
+    working = ingroup_df.copy()
+    working["window_id"] = working[window_col].apply(normalize_window_id)
+    working = working[working["window_id"].astype(bool)].copy()
+    working = append_key_column(working)
+    working = working.dropna(subset=["__key__"])
+    if working.empty:
+        raise ValueError("Ingroup mapping did not yield key/window_id pairs.")
+
+    result: dict[str, list[str]] = {}
+    for key, group in working.groupby("__key__", sort=False)["window_id"]:
+        key_str = key_to_str(key)
+        if not key_str:
+            continue
+        window_ids = [
+            str(value).strip() for value in group.tolist() if str(value).strip()
+        ]
+        if not window_ids:
+            continue
+        result[key_str] = list(dict.fromkeys(window_ids))
+
+    if not result:
+        raise ValueError("No valid window_id values found in ingroup mapping.")
+    return result
+
+
+def parse_annotation_label_names(raw_names: str) -> list[str]:
+    """Parse comma/newline-separated annotation labels from user input."""
+
+    if not raw_names:
+        return []
+    return [part.strip() for part in re.split(r"[\n,]+", raw_names) if part.strip()]
+
+
 def build_energy_distance_lookup(
     ingroup_df: pd.DataFrame,
 ) -> tuple[dict[str, float], str | None]:
@@ -931,10 +983,13 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     last_pca_params: dict[str, Any] | None = None
     last_save_nonce = ""
     last_hdbscan_save_nonce = ""
+    last_hdbscan_annotations_save_nonce = ""
     ingroup_lookup: pd.DataFrame | None = None
     ingroup_lookup_error: str | None = None
     ingroup_energy_by_key: dict[str, float] = {}
     ingroup_energy_error: str | None = None
+    ingroup_window_ids_by_key: dict[str, list[str]] = {}
+    ingroup_window_ids_error: str | None = None
     energy_distance_limits: tuple[float, float] | None = None
     energy_color_midpoint_limits: tuple[float, float] | None = None
 
@@ -1156,6 +1211,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         width=200,
         disabled=True,
     )
+    hdbscan_annotations_save_button = Button(
+        label="Save as annotations",
+        button_type="success",
+        width=200,
+        disabled=True,
+    )
     hdbscan_status_box = Div(
         text="<em>Run UMAP or PCA first, then compute clusters.</em>",
         render_as_text=False,
@@ -1180,6 +1241,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         styles={"color": "#2d2616", "margin-top": "6px"},
         width=240,
     )
+    hdbscan_annotations_status_box = Div(
+        text="<em>Compute HDBSCAN to enable annotation export.</em>",
+        render_as_text=False,
+        styles={"color": "#2d2616", "margin-top": "6px"},
+        width=240,
+    )
     hdbscan_panel = column(
         Div(
             text="HDBSCAN",
@@ -1200,6 +1267,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         energy_distance_status_box,
         hdbscan_save_button,
         hdbscan_save_status_box,
+        hdbscan_annotations_save_button,
+        hdbscan_annotations_status_box,
         width=260,
         sizing_mode="fixed",
         css_classes=["control-card"],
@@ -1475,6 +1544,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     )
     hdbscan_save_request_source = ColumnDataSource(
         data={"name": [], "description": [], "nonce": []}
+    )
+    hdbscan_annotations_save_request_source = ColumnDataSource(
+        data={"label_names": [], "provenance": [], "nonce": []}
     )
     pcp_plot = figure(
         height=620,
@@ -2227,6 +2299,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hdbscan_save_button.disabled = True
         hdbscan_save_status_box.text = (
             "<em>Compute HDBSCAN to enable saving clusters.</em>"
+        )
+        hdbscan_annotations_save_button.disabled = True
+        hdbscan_annotations_status_box.text = (
+            "<em>Compute HDBSCAN to enable annotation export.</em>"
         )
         update_condensed_tree("<em>Compute HDBSCAN to see the condensed tree.</em>")
         hdbscan_checklist.labels = []
@@ -4342,6 +4418,166 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             f"{html.escape(str(output_dir))}.{skipped_msg}{row_msg}"
         )
 
+    def save_hdbscan_annotations(
+        label_names_text: str,
+        provenance_text: str,
+    ) -> None:
+        """Persist HDBSCAN clusters as annotation rows with positive/negative labels."""
+
+        if current_species_slug is None:
+            hdbscan_annotations_status_box.text = (
+                "<em>Load a species before saving annotations.</em>"
+            )
+            return
+        if current_hdbscan_labels is None:
+            hdbscan_annotations_status_box.text = (
+                "<em>Compute HDBSCAN before saving annotations.</em>"
+            )
+            return
+        if ingroup_window_ids_error:
+            hdbscan_annotations_status_box.text = (
+                f"<em>{html.escape(ingroup_window_ids_error)}</em>"
+            )
+            return
+        if not ingroup_window_ids_by_key:
+            hdbscan_annotations_status_box.text = (
+                "<em>No window_id mapping available from ingroup metadata.</em>"
+            )
+            return
+
+        labels = list(pcp_source.data.get("hdbscan_label", []))
+        key_values_raw = list(pcp_source.data.get("key", []))
+        if not labels or not key_values_raw:
+            hdbscan_annotations_status_box.text = (
+                "<em>PCP data is missing HDBSCAN labels or key values.</em>"
+            )
+            return
+        if len(labels) != len(key_values_raw):
+            hdbscan_annotations_status_box.text = (
+                "<em>HDBSCAN labels do not align with PCP keys.</em>"
+            )
+            return
+
+        cluster_order = [
+            str(label).strip()
+            for label in (hdbscan_checklist.labels or [])
+            if str(label).strip()
+        ]
+        if not cluster_order:
+            cluster_order = sorted(
+                {str(label).strip() for label in labels if str(label).strip()},
+                key=lambda lbl: (lbl != HDBSCAN_NOISE_LABEL, lbl),
+            )
+        if not cluster_order:
+            hdbscan_annotations_status_box.text = "<em>No HDBSCAN clusters found.</em>"
+            return
+
+        annotation_names = parse_annotation_label_names(label_names_text)
+        if len(annotation_names) != len(cluster_order):
+            expected_order = html.escape(", ".join(cluster_order))
+            hdbscan_annotations_status_box.text = (
+                "<em>Provide exactly one label name per cluster. "
+                f"Expected order: {expected_order}.</em>"
+            )
+            return
+
+        provenance = (provenance_text or "").strip() or "Mas"
+        cluster_to_annotation = dict(zip(cluster_order, annotation_names))
+
+        key_to_cluster: dict[str, str] = {}
+        ordered_keys: list[str] = []
+        conflicting_assignments = 0
+        empty_key_rows = 0
+        for idx, key in enumerate(key_values_raw):
+            key_str = str(key).strip()
+            if not key_str:
+                empty_key_rows += 1
+                continue
+            cluster_label = str(labels[idx]).strip()
+            if key_str in key_to_cluster:
+                if key_to_cluster[key_str] != cluster_label:
+                    conflicting_assignments += 1
+                continue
+            key_to_cluster[key_str] = cluster_label
+            ordered_keys.append(key_str)
+
+        if not ordered_keys:
+            hdbscan_annotations_status_box.text = (
+                "<em>No valid keys were found for annotation export.</em>"
+            )
+            return
+
+        rows: list[dict[str, str]] = []
+        missing_window_keys: set[str] = set()
+        for cluster_label in cluster_order:
+            annotation_label = cluster_to_annotation[cluster_label]
+            for key in ordered_keys:
+                window_ids = ingroup_window_ids_by_key.get(key, [])
+                if not window_ids:
+                    missing_window_keys.add(key)
+                    continue
+                label_type = (
+                    HDB_ANNOTATION_POSITIVE
+                    if key_to_cluster.get(key) == cluster_label
+                    else HDB_ANNOTATION_NEGATIVE
+                )
+                for window_id in window_ids:
+                    rows.append(
+                        {
+                            "id": "",
+                            "window_id": window_id,
+                            "label": annotation_label,
+                            "label_type": label_type,
+                            "provenance": provenance,
+                            "timestamp": "",
+                        }
+                    )
+
+        if not rows:
+            hdbscan_annotations_status_box.text = (
+                "<em>No annotation rows were generated.</em>"
+            )
+            return
+
+        output_dir = groups_root / current_species_slug / "hdbannotations"
+        output_path = output_dir / "annotations.csv"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(rows, columns=HDB_ANNOTATION_COLUMNS).to_csv(
+                output_path,
+                index=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            hdbscan_annotations_status_box.text = (
+                f"<span style='color:#b00;'>Failed to save annotations: "
+                f"{html.escape(str(exc))}</span>"
+            )
+            return
+
+        try:
+            relative_display = output_path.relative_to(root_path)
+        except ValueError:
+            relative_display = output_path
+
+        mapped_keys = len(ordered_keys) - len(missing_window_keys)
+        message = (
+            f"Saved {len(rows)} annotation row(s) to "
+            f"{html.escape(str(relative_display))}. "
+            f"Mapped {mapped_keys}/{len(ordered_keys)} key(s) across "
+            f"{len(cluster_order)} cluster label(s)."
+        )
+        if missing_window_keys:
+            message += (
+                f" Missing window_id mapping for {len(missing_window_keys)} key(s)."
+            )
+        if empty_key_rows:
+            message += f" Skipped {empty_key_rows} row(s) with empty keys."
+        if conflicting_assignments:
+            message += (
+                f" Ignored {conflicting_assignments} conflicting key assignment(s)."
+            )
+        hdbscan_annotations_status_box.text = message
+
     def on_save_request(
         attr: str, old: dict[str, list[str]], new: dict[str, list[str]]
     ) -> None:
@@ -4379,6 +4615,25 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         group_name = name_list[0] if name_list else ""
         description_text = desc_list[0] if desc_list else ""
         save_hdbscan_groups(group_name, description_text)
+
+    def on_hdbscan_annotations_save_request(
+        attr: str, old: dict[str, list[str]], new: dict[str, list[str]]
+    ) -> None:
+        """Handle HDBSCAN annotation save requests issued from the JS prompt."""
+
+        nonlocal last_hdbscan_annotations_save_nonce
+        nonce_list = new.get("nonce", [])
+        if not nonce_list:
+            return
+        nonce = str(nonce_list[0])
+        if not nonce or nonce == last_hdbscan_annotations_save_nonce:
+            return
+        last_hdbscan_annotations_save_nonce = nonce
+        label_names_list = new.get("label_names", [])
+        provenance_list = new.get("provenance", [])
+        label_names_text = label_names_list[0] if label_names_list else ""
+        provenance_text = provenance_list[0] if provenance_list else ""
+        save_hdbscan_annotations(label_names_text, provenance_text)
 
     create_group_button.on_click(create_group_from_selection)
     clear_groups_button.on_click(clear_active_pcp_groups)
@@ -4430,6 +4685,52 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         )
     )
     hdbscan_save_request_source.on_change("data", on_hdbscan_save_request)
+
+    hdbscan_annotations_save_button.js_on_click(
+        CustomJS(
+            args=dict(
+                save_source=hdbscan_annotations_save_request_source,
+                cluster_checklist=hdbscan_checklist,
+            ),
+            code="""
+            const clusterLabels = (cluster_checklist.labels || [])
+                .map((value) => String(value).trim())
+                .filter((value) => value.length > 0);
+            if (!clusterLabels.length) {
+                window.alert("No HDBSCAN clusters are available.");
+                return;
+            }
+            const promptMessage = [
+                "Enter comma-separated annotation names in this exact cluster order:",
+                clusterLabels.join(", "),
+            ].join("\\n");
+            const labelNames = window.prompt(
+                promptMessage,
+                clusterLabels.join(", ")
+            );
+            if (labelNames === null) {
+                return;
+            }
+            const provenance = window.prompt(
+                "Enter provenance for annotations:",
+                "Mas"
+            );
+            if (provenance === null) {
+                return;
+            }
+            save_source.data = {
+                label_names: [labelNames.trim()],
+                provenance: [(provenance.trim() || "Mas")],
+                nonce: [String(Date.now())],
+            };
+            save_source.change.emit();
+            """,
+        )
+    )
+    hdbscan_annotations_save_request_source.on_change(
+        "data",
+        on_hdbscan_annotations_save_request,
+    )
 
     def update_pcp_plot(projection: np.ndarray, metadata_df: pd.DataFrame) -> None:
         """Populate the parallel coordinates plot from UMAP output."""
@@ -4705,6 +5006,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         nonlocal current_umap_metadata, current_point_base, current_point_dims
         nonlocal ingroup_lookup, ingroup_lookup_error
         nonlocal ingroup_energy_by_key, ingroup_energy_error
+        nonlocal ingroup_window_ids_by_key, ingroup_window_ids_error
         species_slug = species_select.value
         groups_by_category = collect_groups_for_species(groups_root, species_slug)
         rebuild_checkboxes(groups_by_category)
@@ -4720,6 +5022,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         ingroup_lookup_error = None
         ingroup_energy_by_key = {}
         ingroup_energy_error = None
+        ingroup_window_ids_by_key = {}
+        ingroup_window_ids_error = None
         update_energy_distance_slider(None)
         update_energy_color_midpoint_slider(None)
         ingroup_base = current_embeddings_path.parent
@@ -4730,6 +5034,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 f"{ingroup_base / 'ingroup_energy_with_meta.csv'}."
             )
             ingroup_energy_error = ingroup_lookup_error
+            ingroup_window_ids_error = ingroup_lookup_error
             update_energy_distance_slider(None)
             update_energy_color_midpoint_slider(None)
         else:
@@ -4739,6 +5044,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 ingroup_energy_by_key, ingroup_energy_error = (
                     build_energy_distance_lookup(ingroup_df)
                 )
+                ingroup_window_ids_by_key = build_window_ids_by_key(ingroup_df)
                 energy_bounds = energy_distance_bounds(ingroup_df)
                 update_energy_distance_slider(energy_bounds)
                 update_energy_color_midpoint_slider(energy_bounds)
@@ -4748,6 +5054,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                     f"{ingroup_mapping_path}: {exc}"
                 )
                 ingroup_energy_error = ingroup_lookup_error
+                ingroup_window_ids_error = ingroup_lookup_error
                 update_energy_distance_slider(None)
                 update_energy_color_midpoint_slider(None)
         metadata_path = root_path / "embeddings" / species_slug / "metadata.csv"
@@ -5678,6 +5985,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hdbscan_save_button.disabled = False
         hdbscan_save_status_box.text = (
             "<em>Press Save HDBSCAN groups to export clusters.</em>"
+        )
+        hdbscan_annotations_save_button.disabled = False
+        hdbscan_annotations_status_box.text = (
+            "<em>Press Save as annotations to export label positives/negatives.</em>"
         )
         update_condensed_tree()
         update_hdbscan_context_plots()
