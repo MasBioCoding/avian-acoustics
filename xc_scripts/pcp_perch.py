@@ -119,6 +119,20 @@ HDBSCAN_AUX_DATE_IDX = 1
 HDBSCAN_AUX_TIME_IDX = 2
 HDBSCAN_YEAR_HIST_BINS = 36
 HDBSCAN_DAY_HIST_BINS = 24
+HDBSCAN_CONTEXT_YEAR_PLOT_WIDTH = 360
+HDBSCAN_CONTEXT_YEAR_PLOT_HEIGHT = 220
+HDBSCAN_CONTEXT_DAY_PLOT_WIDTH = 360
+HDBSCAN_CONTEXT_DAY_PLOT_HEIGHT = 220
+HDBSCAN_CONTEXT_MAP_WIDTH = 1120
+HDBSCAN_CONTEXT_MAP_HEIGHT = 360
+HDBSCAN_CONTEXT_MAP_POINT_SIZE = 6
+HDBSCAN_CONTEXT_MAP_DEFAULT_LON_MIN = -20.0
+HDBSCAN_CONTEXT_MAP_DEFAULT_LON_MAX = 60.0
+HDBSCAN_CONTEXT_MAP_DEFAULT_LAT_MIN = 28.0
+HDBSCAN_CONTEXT_MAP_DEFAULT_LAT_MAX = 72.0
+MAP_TILE_PROVIDER = "CartoDB.PositronNoLabels"
+MAP_TILE_FALLBACK_PROVIDER = "CartoDB.Positron"
+MAP_TILE_RETINA = True
 EARTH_WEB_MERCATOR_RADIUS = 6_378_137.0
 WEB_MERCATOR_MAX_LAT = 85.05112878
 MONTH_OFFSETS = np.array(
@@ -1730,9 +1744,57 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "label": [],
         }
     )
+    hdbscan_map_filter = BooleanFilter(booleans=[])
+    hdbscan_map_group_toggle = CheckboxGroup(
+        labels=[],
+        active=[],
+        visible=False,
+        width=220,
+    )
+    hdbscan_map_toggle_help = Div(
+        text="<em>Compute HDBSCAN to enable map group toggles.</em>",
+        render_as_text=False,
+        styles={"color": "#2d2616", "margin-bottom": "4px"},
+    )
+
+    def lat_lon_to_web_mercator(
+        lat_deg: np.ndarray, lon_deg: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Project latitude/longitude arrays to Web Mercator meters."""
+
+        lat_clipped = np.clip(lat_deg, -WEB_MERCATOR_MAX_LAT, WEB_MERCATOR_MAX_LAT)
+        lon_rad = np.deg2rad(lon_deg)
+        lat_rad = np.deg2rad(lat_clipped)
+        x = EARTH_WEB_MERCATOR_RADIUS * lon_rad
+        y = EARTH_WEB_MERCATOR_RADIUS * np.log(np.tan(np.pi / 4.0 + lat_rad / 2.0))
+        return x, y
+
+    def default_mercator_bounds() -> tuple[float, float, float, float]:
+        """Return default map bounds (lon/lat) converted to Web Mercator."""
+
+        lon_vals = np.array(
+            [HDBSCAN_CONTEXT_MAP_DEFAULT_LON_MIN, HDBSCAN_CONTEXT_MAP_DEFAULT_LON_MAX],
+            dtype=float,
+        )
+        lat_vals = np.array(
+            [HDBSCAN_CONTEXT_MAP_DEFAULT_LAT_MIN, HDBSCAN_CONTEXT_MAP_DEFAULT_LAT_MAX],
+            dtype=float,
+        )
+        x_vals, y_vals = lat_lon_to_web_mercator(lat_vals, lon_vals)
+        return (
+            float(np.min(x_vals)),
+            float(np.max(x_vals)),
+            float(np.min(y_vals)),
+            float(np.max(y_vals)),
+        )
+
+    map_default_x_min, map_default_x_max, map_default_y_min, map_default_y_max = (
+        default_mercator_bounds()
+    )
+
     year_cycle_plot = figure(
-        height=220,
-        width=360,
+        height=HDBSCAN_CONTEXT_YEAR_PLOT_HEIGHT,
+        width=HDBSCAN_CONTEXT_YEAR_PLOT_WIDTH,
         toolbar_location="above",
         tools="pan,wheel_zoom,reset",
         x_range=Range1d(0, 365),
@@ -1757,8 +1819,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     year_cycle_plot.toolbar.autohide = True
 
     day_cycle_plot = figure(
-        height=220,
-        width=360,
+        height=HDBSCAN_CONTEXT_DAY_PLOT_HEIGHT,
+        width=HDBSCAN_CONTEXT_DAY_PLOT_WIDTH,
         toolbar_location="above",
         tools="pan,wheel_zoom,reset",
         x_range=Range1d(0, 24),
@@ -1782,26 +1844,38 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     day_cycle_plot.toolbar.autohide = True
 
     mercator_plot = figure(
-        height=220,
-        width=430,
+        height=HDBSCAN_CONTEXT_MAP_HEIGHT,
+        width=HDBSCAN_CONTEXT_MAP_WIDTH,
         toolbar_location="above",
         tools="pan,wheel_zoom,reset",
         x_axis_type="mercator",
         y_axis_type="mercator",
-        x_range=Range1d(-20_037_508, 20_037_508),
-        y_range=Range1d(-20_037_508, 20_037_508),
+        x_range=Range1d(map_default_x_min, map_default_x_max),
+        y_range=Range1d(map_default_y_min, map_default_y_max),
         background_fill_color="#f7f4ed",
         title="Geographic (Web Mercator)",
     )
+    map_tile_provider_used: str | None = None
+    map_tile_warning: str | None = None
+    try:
+        mercator_plot.add_tile(MAP_TILE_PROVIDER, retina=MAP_TILE_RETINA)
+        map_tile_provider_used = MAP_TILE_PROVIDER
+    except Exception:  # noqa: BLE001
+        try:
+            mercator_plot.add_tile(MAP_TILE_FALLBACK_PROVIDER, retina=MAP_TILE_RETINA)
+            map_tile_provider_used = MAP_TILE_FALLBACK_PROVIDER
+        except Exception as exc:  # noqa: BLE001
+            map_tile_warning = f"Map tiles unavailable ({exc})."
     mercator_plot.scatter(
         x="x",
         y="y",
-        size=6,
+        size=HDBSCAN_CONTEXT_MAP_POINT_SIZE,
         fill_color="color",
         line_color="color",
         fill_alpha="alpha",
         line_alpha="alpha",
         source=hdbscan_map_source,
+        view=CDSView(filter=hdbscan_map_filter),
     )
     mercator_plot.xaxis.axis_label = "Longitude (Web Mercator)"
     mercator_plot.yaxis.axis_label = "Latitude (Web Mercator)"
@@ -1816,10 +1890,89 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     hdbscan_context_row = row(
         year_cycle_plot,
         day_cycle_plot,
-        mercator_plot,
         sizing_mode="scale_width",
         styles={"gap": "10px", "flex-wrap": "wrap"},
     )
+
+    def active_hdbscan_map_labels() -> set[str]:
+        """Return currently selected map labels from the toggle widget."""
+
+        toggle_labels = hdbscan_map_group_toggle.labels or []
+        return {
+            toggle_labels[idx]
+            for idx in hdbscan_map_group_toggle.active
+            if 0 <= idx < len(toggle_labels)
+        }
+
+    def update_hdbscan_map_toggle_labels(available_labels: list[str]) -> None:
+        """Refresh map toggle labels while preserving prior selections when possible."""
+
+        prior_active = active_hdbscan_map_labels()
+        hdbscan_map_group_toggle.labels = available_labels
+        if not available_labels:
+            hdbscan_map_group_toggle.active = []
+            hdbscan_map_group_toggle.visible = False
+            hdbscan_map_toggle_help.text = (
+                "<em>Compute HDBSCAN to enable map group toggles.</em>"
+            )
+            return
+
+        if prior_active:
+            active_indices = [
+                idx
+                for idx, label in enumerate(available_labels)
+                if label in prior_active
+            ]
+        else:
+            active_indices = list(range(len(available_labels)))
+        if not active_indices:
+            active_indices = list(range(len(available_labels)))
+
+        hdbscan_map_group_toggle.active = active_indices
+        hdbscan_map_group_toggle.visible = True
+        hdbscan_map_toggle_help.text = (
+            "<em>Toggle HDBSCAN groups to show/hide map points.</em>"
+        )
+
+    def apply_hdbscan_map_visibility() -> None:
+        """Apply selected map groups to the mercator scatter visibility filter."""
+
+        map_labels = [str(value) for value in hdbscan_map_source.data.get("label", [])]
+        if not map_labels:
+            hdbscan_map_filter.booleans = []
+            return
+
+        active_labels = active_hdbscan_map_labels()
+        if not active_labels:
+            hdbscan_map_filter.booleans = [False] * len(map_labels)
+            return
+        hdbscan_map_filter.booleans = [label in active_labels for label in map_labels]
+
+    def on_hdbscan_map_toggle_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        """Update mercator visibility when map-group toggles change."""
+
+        apply_hdbscan_map_visibility()
+
+    hdbscan_map_group_toggle.on_change("active", on_hdbscan_map_toggle_change)
+
+    hdbscan_map_filter_panel = column(
+        Div(
+            text="Map group visibility",
+            styles={
+                "font-size": "13px",
+                "font-weight": "600",
+                "margin-top": "8px",
+                "margin-bottom": "2px",
+                "color": "#2d2616",
+            },
+        ),
+        hdbscan_map_toggle_help,
+        hdbscan_map_group_toggle,
+        sizing_mode="stretch_width",
+    )
+
     hdbscan_context_panel = column(
         Div(
             text="HDBSCAN geo/time diagnostics",
@@ -1832,6 +1985,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         ),
         hdbscan_context_status_box,
         hdbscan_context_row,
+        hdbscan_map_filter_panel,
+        mercator_plot,
         sizing_mode="stretch_width",
         width=1200,
         css_classes=["control-card"],
@@ -1869,14 +2024,16 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "alpha": [],
             "label": [],
         }
+        hdbscan_map_filter.booleans = []
+        update_hdbscan_map_toggle_labels([])
         year_cycle_plot.y_range.start = 0
         year_cycle_plot.y_range.end = 1
         day_cycle_plot.y_range.start = 0
         day_cycle_plot.y_range.end = 1
-        mercator_plot.x_range.start = -20_037_508
-        mercator_plot.x_range.end = 20_037_508
-        mercator_plot.y_range.start = -20_037_508
-        mercator_plot.y_range.end = 20_037_508
+        mercator_plot.x_range.start = map_default_x_min
+        mercator_plot.x_range.end = map_default_x_max
+        mercator_plot.y_range.start = map_default_y_min
+        mercator_plot.y_range.end = map_default_y_max
         hdbscan_context_status_box.text = (
             message
             or "<em>Compute HDBSCAN to populate cycle and map diagnostics.</em>"
@@ -3667,18 +3824,6 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hours[valid] = np.mod(seconds[valid], 86_400.0) / 3_600.0
         return hours, time_col, None
 
-    def lat_lon_to_web_mercator(
-        lat_deg: np.ndarray, lon_deg: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Project latitude/longitude arrays to Web Mercator meters."""
-
-        lat_clipped = np.clip(lat_deg, -WEB_MERCATOR_MAX_LAT, WEB_MERCATOR_MAX_LAT)
-        lon_rad = np.deg2rad(lon_deg)
-        lat_rad = np.deg2rad(lat_clipped)
-        x = EARTH_WEB_MERCATOR_RADIUS * lon_rad
-        y = EARTH_WEB_MERCATOR_RADIUS * np.log(np.tan(np.pi / 4.0 + lat_rad / 2.0))
-        return x, y
-
     def update_hdbscan_context_plots() -> None:
         """Populate year/day cycle histograms and mercator scatter by cluster."""
 
@@ -3808,10 +3953,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "alpha": [],
                 "label": [],
             }
-            mercator_plot.x_range.start = -20_037_508
-            mercator_plot.x_range.end = 20_037_508
-            mercator_plot.y_range.start = -20_037_508
-            mercator_plot.y_range.end = 20_037_508
+            hdbscan_map_filter.booleans = []
+            update_hdbscan_map_toggle_labels([])
+            mercator_plot.x_range.start = map_default_x_min
+            mercator_plot.x_range.end = map_default_x_max
+            mercator_plot.y_range.start = map_default_y_min
+            mercator_plot.y_range.end = map_default_y_max
         else:
             lat_col, lon_col = coord_cols
             lat = pd.to_numeric(current_umap_metadata[lat_col], errors="coerce").to_numpy(
@@ -3839,10 +3986,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                     "alpha": [],
                     "label": [],
                 }
-                mercator_plot.x_range.start = -20_037_508
-                mercator_plot.x_range.end = 20_037_508
-                mercator_plot.y_range.start = -20_037_508
-                mercator_plot.y_range.end = 20_037_508
+                hdbscan_map_filter.booleans = []
+                update_hdbscan_map_toggle_labels([])
+                mercator_plot.x_range.start = map_default_x_min
+                mercator_plot.x_range.end = map_default_x_max
+                mercator_plot.y_range.start = map_default_y_min
+                mercator_plot.y_range.end = map_default_y_max
             else:
                 x, y = lat_lon_to_web_mercator(lat[valid_geo], lon[valid_geo])
                 map_labels = labels[valid_geo]
@@ -3857,6 +4006,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                     "alpha": [0.72] * len(map_colors),
                     "label": map_labels.tolist(),
                 }
+                map_toggle_labels = sorted(set(map_labels.tolist()), key=_label_key)
+                update_hdbscan_map_toggle_labels(map_toggle_labels)
+                apply_hdbscan_map_visibility()
                 x_min = float(np.min(x))
                 x_max = float(np.max(x))
                 y_min = float(np.min(y))
@@ -3884,6 +4036,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 "<em>Mercator source:</em> "
                 f"{html.escape(coord_cols[0])}/{html.escape(coord_cols[1])}"
             )
+        if map_tile_provider_used is not None:
+            status_lines.append(
+                f"<em>Map tiles:</em> {html.escape(map_tile_provider_used)}"
+            )
+        if map_tile_warning is not None:
+            status_lines.append(f"<em>{html.escape(map_tile_warning)}</em>")
         for warning in warnings:
             status_lines.append(f"<em>{html.escape(warning)}</em>")
         hdbscan_context_status_box.text = "<br>".join(status_lines)

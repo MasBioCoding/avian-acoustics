@@ -68,8 +68,8 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 
@@ -143,7 +143,7 @@ MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "20pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Phylloscopus collybita"
+MAP_TITLE_TEXT = "Emberiza calandra"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
