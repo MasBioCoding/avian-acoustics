@@ -117,12 +117,16 @@ DEFAULT_HDBSCAN_MIN_SAMPLES = 5
 HDBSCAN_AUX_GEO_IDX = 0
 HDBSCAN_AUX_DATE_IDX = 1
 HDBSCAN_AUX_TIME_IDX = 2
+HDBSCAN_AUX_RECORDING_YEAR_IDX = 3
 HDBSCAN_YEAR_HIST_BINS = 36
 HDBSCAN_DAY_HIST_BINS = 24
 HDBSCAN_CONTEXT_YEAR_PLOT_WIDTH = 360
 HDBSCAN_CONTEXT_YEAR_PLOT_HEIGHT = 220
 HDBSCAN_CONTEXT_DAY_PLOT_WIDTH = 360
 HDBSCAN_CONTEXT_DAY_PLOT_HEIGHT = 220
+HDBSCAN_CONTEXT_ABUNDANCE_PLOT_WIDTH = 360
+HDBSCAN_CONTEXT_ABUNDANCE_PLOT_HEIGHT = 220
+HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR = 2015
 HDBSCAN_CONTEXT_MAP_WIDTH = 1120
 HDBSCAN_CONTEXT_MAP_HEIGHT = 360
 HDBSCAN_CONTEXT_MAP_POINT_SIZE = 6
@@ -901,6 +905,10 @@ def format_pcp_group_description(
                 "- include_time: "
                 f"{'yes' if hdbscan_params.get('include_time') else 'no'}"
             )
+            lines.append(
+                "- include_recording_year: "
+                f"{'yes' if hdbscan_params.get('include_recording_year') else 'no'}"
+            )
     else:
         lines.append("- not run yet")
     return "\n".join(lines).strip() + "\n"
@@ -1200,7 +1208,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         width=120,
     )
     hdbscan_include_aux_checkbox = CheckboxGroup(
-        labels=["Include geo+date+time in HDBSCAN"],
+        labels=["Include metadata in HDBSCAN"],
         active=[],
         width=240,
     )
@@ -1209,11 +1217,13 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "Lat/Lon",
             "Date (yearly cycle)",
             "Time (daily cycle)",
+            "Recording year",
         ],
         active=[
             HDBSCAN_AUX_GEO_IDX,
             HDBSCAN_AUX_DATE_IDX,
             HDBSCAN_AUX_TIME_IDX,
+            HDBSCAN_AUX_RECORDING_YEAR_IDX,
         ],
         width=240,
         disabled=True,
@@ -1735,6 +1745,14 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "label": [],
         }
     )
+    hdbscan_yearly_abundance_source = ColumnDataSource(
+        data={
+            "xs": [],
+            "ys": [],
+            "color": [],
+            "label": [],
+        }
+    )
     hdbscan_map_source = ColumnDataSource(
         data={
             "x": [],
@@ -1791,6 +1809,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     map_default_x_min, map_default_x_max, map_default_y_min, map_default_y_max = (
         default_mercator_bounds()
     )
+    abundance_default_year_max = max(
+        HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR, int(pd.Timestamp.now().year)
+    )
 
     year_cycle_plot = figure(
         height=HDBSCAN_CONTEXT_YEAR_PLOT_HEIGHT,
@@ -1843,6 +1864,33 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     day_cycle_plot.xaxis.ticker = [0, 3, 6, 9, 12, 15, 18, 21, 24]
     day_cycle_plot.toolbar.autohide = True
 
+    yearly_abundance_plot = figure(
+        height=HDBSCAN_CONTEXT_ABUNDANCE_PLOT_HEIGHT,
+        width=HDBSCAN_CONTEXT_ABUNDANCE_PLOT_WIDTH,
+        toolbar_location="above",
+        tools="pan,wheel_zoom,reset",
+        x_range=Range1d(
+            HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR - 0.5,
+            abundance_default_year_max + 0.5,
+        ),
+        background_fill_color="#f7f4ed",
+        title="Yearly abundance",
+    )
+    yearly_abundance_plot.multi_line(
+        xs="xs",
+        ys="ys",
+        line_color="color",
+        line_width=2.4,
+        line_alpha=0.9,
+        source=hdbscan_yearly_abundance_source,
+    )
+    yearly_abundance_plot.xaxis.axis_label = "Year"
+    yearly_abundance_plot.yaxis.axis_label = "Samples"
+    yearly_abundance_plot.xaxis.ticker = list(
+        range(HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR, abundance_default_year_max + 1)
+    )
+    yearly_abundance_plot.toolbar.autohide = True
+
     mercator_plot = figure(
         height=HDBSCAN_CONTEXT_MAP_HEIGHT,
         width=HDBSCAN_CONTEXT_MAP_WIDTH,
@@ -1882,7 +1930,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     mercator_plot.toolbar.autohide = True
 
     hdbscan_context_status_box = Div(
-        text="<em>Compute HDBSCAN to populate cycle and map diagnostics.</em>",
+        text="<em>Compute HDBSCAN to populate yearly abundance, cycle, and map diagnostics.</em>",
         render_as_text=False,
         styles={"color": "#2d2616", "margin-bottom": "6px"},
         width=1200,
@@ -1890,6 +1938,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     hdbscan_context_row = row(
         year_cycle_plot,
         day_cycle_plot,
+        yearly_abundance_plot,
         sizing_mode="scale_width",
         styles={"gap": "10px", "flex-wrap": "wrap"},
     )
@@ -2017,6 +2066,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "alpha": [],
             "label": [],
         }
+        hdbscan_yearly_abundance_source.data = {
+            "xs": [],
+            "ys": [],
+            "color": [],
+            "label": [],
+        }
         hdbscan_map_source.data = {
             "x": [],
             "y": [],
@@ -2030,13 +2085,20 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         year_cycle_plot.y_range.end = 1
         day_cycle_plot.y_range.start = 0
         day_cycle_plot.y_range.end = 1
+        yearly_abundance_plot.x_range.start = HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR - 0.5
+        yearly_abundance_plot.x_range.end = abundance_default_year_max + 0.5
+        yearly_abundance_plot.xaxis.ticker = list(
+            range(HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR, abundance_default_year_max + 1)
+        )
+        yearly_abundance_plot.y_range.start = 0
+        yearly_abundance_plot.y_range.end = 1
         mercator_plot.x_range.start = map_default_x_min
         mercator_plot.x_range.end = map_default_x_max
         mercator_plot.y_range.start = map_default_y_min
         mercator_plot.y_range.end = map_default_y_max
         hdbscan_context_status_box.text = (
             message
-            or "<em>Compute HDBSCAN to populate cycle and map diagnostics.</em>"
+            or "<em>Compute HDBSCAN to populate yearly abundance, cycle, and map diagnostics.</em>"
         )
 
     pcp_panel = column(
@@ -3714,6 +3776,22 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         features[valid, 1] = np.cos(angles[valid])
         return features, f"Time cycle ({time_col})", None
 
+    def build_recording_year_feature_block(
+        metadata_df: pd.DataFrame,
+    ) -> tuple[np.ndarray | None, str | None, str | None]:
+        """Return linear recording-year values parsed from metadata dates."""
+
+        years, date_col, warning = recording_year_series(metadata_df)
+        if years is None:
+            return None, None, warning
+        valid = np.isfinite(years)
+        if not valid.any():
+            return None, None, f"No valid years found in {date_col}."
+
+        features = np.full((len(metadata_df), 1), np.nan, dtype=float)
+        features[valid, 0] = years[valid]
+        return features, f"Recording year ({date_col})", None
+
     def build_hdbscan_input_matrix(
         projection: np.ndarray,
         metadata_df: pd.DataFrame,
@@ -3721,6 +3799,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         include_lat_lon: bool,
         include_date: bool,
         include_time: bool,
+        include_recording_year: bool,
     ) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
         """Build and z-score the matrix used as HDBSCAN input."""
 
@@ -3754,6 +3833,16 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
         if include_time:
             block, label, warning = build_time_feature_block(metadata_df)
+            if block is None:
+                if warning:
+                    warnings.append(warning)
+            else:
+                feature_blocks.append(block)
+                if label:
+                    used_features.append(label)
+
+        if include_recording_year:
+            block, label, warning = build_recording_year_feature_block(metadata_df)
             if block is None:
                 if warning:
                     warnings.append(warning)
@@ -3823,6 +3912,19 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         hours = np.full(len(metadata_df), np.nan, dtype=float)
         hours[valid] = np.mod(seconds[valid], 86_400.0) / 3_600.0
         return hours, time_col, None
+
+    def recording_year_series(
+        metadata_df: pd.DataFrame,
+    ) -> tuple[np.ndarray | None, str | None, str | None]:
+        """Return recording years parsed from metadata dates."""
+
+        date_col = find_column_case_insensitive(metadata_df, DATE_COLUMN_CANDIDATES)
+        if date_col is None:
+            return None, None, "Date column was not found for yearly abundance plot."
+        parsed = pd.to_datetime(metadata_df[date_col], errors="coerce")
+        if not parsed.notna().any():
+            return None, None, f"No valid dates found in {date_col} for yearly abundance plot."
+        return parsed.dt.year.to_numpy(dtype=float), date_col, None
 
     def update_hdbscan_context_plots() -> None:
         """Populate year/day cycle histograms and mercator scatter by cluster."""
@@ -3943,6 +4045,87 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             day_cycle_plot.y_range.start = 0
             day_cycle_plot.y_range.end = max(1.0, max_count * 1.1)
 
+        abundance_years, abundance_year_col, abundance_year_warning = recording_year_series(
+            current_umap_metadata
+        )
+        if abundance_years is None:
+            if abundance_year_warning:
+                warnings.append(abundance_year_warning)
+            hdbscan_yearly_abundance_source.data = {
+                "xs": [],
+                "ys": [],
+                "color": [],
+                "label": [],
+            }
+            yearly_abundance_plot.x_range.start = HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR - 0.5
+            yearly_abundance_plot.x_range.end = abundance_default_year_max + 0.5
+            yearly_abundance_plot.xaxis.ticker = list(
+                range(HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR, abundance_default_year_max + 1)
+            )
+            yearly_abundance_plot.y_range.start = 0
+            yearly_abundance_plot.y_range.end = 1
+        else:
+            finite_abundance = np.isfinite(abundance_years) & (
+                abundance_years >= HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR
+            )
+            if not finite_abundance.any():
+                warnings.append(
+                    "No valid dates from "
+                    f"{HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR} onward were found in "
+                    f"{abundance_year_col} for yearly abundance plot."
+                )
+                hdbscan_yearly_abundance_source.data = {
+                    "xs": [],
+                    "ys": [],
+                    "color": [],
+                    "label": [],
+                }
+                yearly_abundance_plot.x_range.start = (
+                    HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR - 0.5
+                )
+                yearly_abundance_plot.x_range.end = abundance_default_year_max + 0.5
+                yearly_abundance_plot.xaxis.ticker = list(
+                    range(
+                        HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR,
+                        abundance_default_year_max + 1,
+                    )
+                )
+                yearly_abundance_plot.y_range.start = 0
+                yearly_abundance_plot.y_range.end = 1
+            else:
+                min_year = HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR
+                max_year = int(np.max(abundance_years[finite_abundance]))
+                all_years = np.arange(min_year, max_year + 1, dtype=int)
+                yearly_abundance_data: dict[str, list[Any]] = {
+                    "xs": [],
+                    "ys": [],
+                    "color": [],
+                    "label": [],
+                }
+                max_count = 0
+                for label in ordered_labels:
+                    mask = (labels == label) & finite_abundance
+                    if not mask.any():
+                        continue
+                    label_years = abundance_years[mask].astype(int)
+                    counts = np.bincount(
+                        label_years - min_year,
+                        minlength=len(all_years),
+                    )
+                    max_count = max(max_count, int(np.max(counts)))
+                    yearly_abundance_data["xs"].append(all_years.astype(float).tolist())
+                    yearly_abundance_data["ys"].append(counts.astype(float).tolist())
+                    yearly_abundance_data["color"].append(
+                        current_hdbscan_color_map.get(label, PCP_OTHER_COLOR)
+                    )
+                    yearly_abundance_data["label"].append(label)
+                hdbscan_yearly_abundance_source.data = yearly_abundance_data
+                yearly_abundance_plot.x_range.start = min_year - 0.5
+                yearly_abundance_plot.x_range.end = max_year + 0.5
+                yearly_abundance_plot.xaxis.ticker = all_years.tolist()
+                yearly_abundance_plot.y_range.start = 0
+                yearly_abundance_plot.y_range.end = max(1.0, max_count * 1.1)
+
         coord_cols = find_coordinate_columns(current_umap_metadata)
         if coord_cols is None:
             warnings.append("Lat/Lon columns were not found for mercator plot.")
@@ -4025,12 +4208,18 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 mercator_plot.y_range.end = y_max + y_pad
 
         status_lines = [
-            "<strong>Diagnostics:</strong> Year/day cycles and geo points colored by HDBSCAN group."
+            "<strong>Diagnostics:</strong> Yearly abundance, year/day cycles, and geo points colored by HDBSCAN group."
         ]
         if year_col is not None:
             status_lines.append(f"<em>Year cycle source:</em> {html.escape(year_col)}")
         if day_col is not None:
             status_lines.append(f"<em>Day cycle source:</em> {html.escape(day_col)}")
+        if abundance_year_col is not None:
+            status_lines.append(
+                "<em>Yearly abundance source:</em> "
+                f"{html.escape(abundance_year_col)} "
+                f"(years >= {HDBSCAN_CONTEXT_ABUNDANCE_MIN_YEAR})"
+            )
         if coord_cols is not None:
             status_lines.append(
                 "<em>Mercator source:</em> "
@@ -6036,6 +6225,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         include_lat_lon = include_aux and HDBSCAN_AUX_GEO_IDX in active_aux_dims
         include_date = include_aux and HDBSCAN_AUX_DATE_IDX in active_aux_dims
         include_time = include_aux and HDBSCAN_AUX_TIME_IDX in active_aux_dims
+        include_recording_year = (
+            include_aux and HDBSCAN_AUX_RECORDING_YEAR_IDX in active_aux_dims
+        )
 
         hdbscan_matrix, valid_mask, used_features, feature_warnings = (
             build_hdbscan_input_matrix(
@@ -6044,9 +6236,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 include_lat_lon=include_lat_lon,
                 include_date=include_date,
                 include_time=include_time,
+                include_recording_year=include_recording_year,
             )
         )
-        if include_aux and not any((include_lat_lon, include_date, include_time)):
+        if include_aux and not any(
+            (include_lat_lon, include_date, include_time, include_recording_year)
+        ):
             feature_warnings.append(
                 "Auxiliary mode enabled, but no auxiliary dimensions were selected."
             )
@@ -6057,7 +6252,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             if dropped_rows:
                 hdbscan_status_box.text = (
                     "<em>Not enough valid points for HDBSCAN after filtering "
-                    f"missing geo/date/time values ({valid_count} of {total_rows}).</em>"
+                    f"missing selected auxiliary values ({valid_count} of {total_rows}).</em>"
                 )
             else:
                 hdbscan_status_box.text = (
@@ -6072,6 +6267,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "include_lat_lon": include_lat_lon,
             "include_date": include_date,
             "include_time": include_time,
+            "include_recording_year": include_recording_year,
         }
 
         current_hdbscan_clusterer = None
