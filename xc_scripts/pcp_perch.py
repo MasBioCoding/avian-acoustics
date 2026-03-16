@@ -826,6 +826,57 @@ def resolve_ingroup_mapping_path(
     return None
 
 
+def collect_species_inference_csvs(
+    root_path: Path, species_slug: str
+) -> list[dict[str, Any]]:
+    """Return available inference.csv files for a species."""
+
+    species_root = root_path / "agile_inferences" / species_slug
+    if not species_root.exists():
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for folder in sorted(species_root.iterdir(), key=lambda path: path.name.lower()):
+        if not folder.is_dir():
+            continue
+        csv_path = folder / "inference.csv"
+        if not csv_path.exists():
+            continue
+        entries.append(
+            {
+                "label": folder.name,
+                "folder_path": folder,
+                "csv_path": csv_path,
+            }
+        )
+    return entries
+
+
+def load_csv_key_summary(csv_path: Path) -> tuple[int, set[tuple[str, int]], str | None]:
+    """Read a CSV and summarize the identifier keys it yields."""
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as exc:  # noqa: BLE001
+        return 0, set(), f"Failed to read {csv_path.name}: {exc}"
+
+    raw_rows = len(df)
+    keyed_df = append_key_column(df)
+    if "__key__" not in keyed_df.columns:
+        return raw_rows, set(), (
+            "No identifier columns found; expected filename/file_path or xcid "
+            "with clip_index."
+        )
+
+    keys = set(keyed_df["__key__"].dropna())
+    if not keys:
+        return raw_rows, set(), (
+            "No usable recording keys found; expected filename/file_path or "
+            "xcid with clip_index."
+        )
+    return raw_rows, keys, None
+
+
 def key_to_str(key: tuple[str, int] | None) -> str:
     """Convert a (xcid, clip_index) tuple to a compact string."""
 
@@ -1014,6 +1065,12 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     ingroup_window_ids_error: str | None = None
     energy_distance_limits: tuple[float, float] | None = None
     energy_color_midpoint_limits: tuple[float, float] | None = None
+    current_inference_entries: list[dict[str, Any]] = []
+    inference_summary_cache: dict[str, dict[str, Any]] = {}
+    current_embedding_keys_cache: set[tuple[str, int]] = set()
+    current_embedding_keys_error: str | None = None
+    current_metadata_keys_cache: set[tuple[str, int]] = set()
+    current_metadata_keys_error: str | None = None
 
     safe_options = species_options or ["No species found"]
     species_select = Select(
@@ -1411,6 +1468,39 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         value=1,
         width=140,
         disabled=True,
+    )
+    inference_only_checkbox = CheckboxGroup(
+        labels=["Filter to inference.csv"],
+        active=[],
+        width=220,
+        disabled=True,
+    )
+    inference_csv_header = Div(
+        text="Inference.csv folders",
+        styles={
+            "font-size": "13px",
+            "font-weight": "600",
+            "margin-top": "4px",
+            "margin-bottom": "4px",
+            "color": "#2d2616",
+        },
+    )
+    inference_csv_checkbox_group = CheckboxGroup(
+        labels=[],
+        active=[],
+        width=500,
+        disabled=True,
+    )
+    inference_status_box = Div(
+        text="<em>Load a species to see available inference.csv files.</em>",
+        render_as_text=False,
+        styles={
+            "color": "#3a3426",
+            "max-height": "220px",
+            "overflow-y": "auto",
+            "padding-right": "4px",
+        },
+        width=500,
     )
     color_assignments_box = Div(
         text="<em>Select up to 5 groups to assign colors.</em>",
@@ -2182,6 +2272,240 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             for cb in umap_checkbox_groups.values():
                 cb.disabled = False
 
+    def load_current_embedding_keys() -> None:
+        """Cache the species-wide embedding keys for inference sanity checks."""
+
+        nonlocal current_embedding_keys_cache, current_embedding_keys_error
+
+        current_embedding_keys_cache = set()
+        current_embedding_keys_error = None
+
+        if current_embeddings_path is None:
+            current_embedding_keys_error = "Load a species first."
+            return
+        if not current_embeddings_path.exists():
+            current_embedding_keys_error = (
+                f"Embeddings file not found at {current_embeddings_path}."
+            )
+            return
+
+        identifier_columns = {
+            "xcid",
+            "clip_index",
+            "file_path",
+            "filename",
+            *WINDOW_ID_ALIASES,
+        }
+        try:
+            embeddings_id_df = pd.read_csv(
+                current_embeddings_path,
+                usecols=lambda col: str(col).lower() in identifier_columns,
+            )
+        except Exception as exc:  # noqa: BLE001
+            current_embedding_keys_error = (
+                f"Failed to read embedding identifiers: {exc}"
+            )
+            return
+
+        try:
+            embeddings_with_keys = append_embedding_key_column(
+                embeddings_id_df,
+                ingroup_lookup,
+                ingroup_error=ingroup_lookup_error,
+            )
+        except ValueError as exc:
+            current_embedding_keys_error = str(exc)
+            return
+
+        current_embedding_keys_cache = set(embeddings_with_keys["__key__"].dropna())
+        if not current_embedding_keys_cache:
+            current_embedding_keys_error = "No usable embedding keys found."
+
+    def load_current_metadata_keys() -> None:
+        """Cache the species-wide metadata keys for inference sanity checks."""
+
+        nonlocal current_metadata_keys_cache, current_metadata_keys_error
+
+        current_metadata_keys_cache = set()
+        current_metadata_keys_error = None
+
+        if current_species_slug is None:
+            current_metadata_keys_error = "Load a species first."
+            return
+
+        metadata_path = root_path / "embeddings" / current_species_slug / "metadata.csv"
+        if not metadata_path.exists():
+            current_metadata_keys_error = f"Metadata file not found at {metadata_path}."
+            return
+
+        try:
+            metadata_df = pd.read_csv(
+                metadata_path,
+                usecols=lambda col: str(col).lower()
+                in {"xcid", "clip_index", "file_path", "filename"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            current_metadata_keys_error = f"Failed to read metadata identifiers: {exc}"
+            return
+
+        current_metadata_keys_cache = keys_from_dataframe(metadata_df)
+        if not current_metadata_keys_cache:
+            current_metadata_keys_error = "No usable metadata keys found."
+
+    def selected_inference_entries() -> list[dict[str, Any]]:
+        """Return the inference.csv entries currently checked in the UI."""
+
+        entries: list[dict[str, Any]] = []
+        for idx in inference_csv_checkbox_group.active:
+            if 0 <= idx < len(current_inference_entries):
+                entries.append(current_inference_entries[idx])
+        return entries
+
+    def get_inference_summary(entry: dict[str, Any]) -> dict[str, Any]:
+        """Return cached key summary information for an inference.csv file."""
+
+        cache_key = str(entry["csv_path"])
+        cached = inference_summary_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        raw_rows, keys, error = load_csv_key_summary(Path(entry["csv_path"]))
+        summary = {
+            "raw_rows": raw_rows,
+            "keys": keys,
+            "error": error,
+        }
+        inference_summary_cache[cache_key] = summary
+        return summary
+
+    def update_inference_status_box() -> None:
+        """Refresh the inference.csv discovery and overlap summary."""
+
+        if current_species_slug is None:
+            inference_status_box.text = (
+                "<em>Load a species to see available inference.csv files.</em>"
+            )
+            return
+
+        inference_root = root_path / "agile_inferences" / current_species_slug
+        sections = [
+            "<div><strong>Inference root:</strong> "
+            f"<code>{html.escape(str(inference_root))}</code></div>"
+        ]
+
+        if not current_inference_entries:
+            sections.append("<div><em>No inference.csv files found for this species.</em></div>")
+            inference_status_box.text = "".join(sections)
+            return
+
+        sections.append(
+            "<div>"
+            f"Found {len(current_inference_entries)} inference.csv files. "
+            f"Filter toggle is <strong>{'ON' if inference_only_checkbox.active else 'OFF'}</strong>."
+            "</div>"
+        )
+
+        if current_embedding_keys_error:
+            sections.append(
+                "<div><em>Embeddings sanity check unavailable: "
+                f"{html.escape(current_embedding_keys_error)}</em></div>"
+            )
+        else:
+            sections.append(
+                f"<div>Species embeddings with usable keys: {len(current_embedding_keys_cache)}</div>"
+            )
+
+        if current_metadata_keys_error:
+            sections.append(
+                "<div><em>Metadata sanity check unavailable: "
+                f"{html.escape(current_metadata_keys_error)}</em></div>"
+            )
+        else:
+            sections.append(
+                f"<div>Species metadata with usable keys: {len(current_metadata_keys_cache)}</div>"
+            )
+
+        selected_entries = selected_inference_entries()
+        if not selected_entries:
+            available_labels = ", ".join(
+                html.escape(entry["label"]) for entry in current_inference_entries
+            )
+            sections.append(
+                "<div><em>Select one or more inference folders to inspect them.</em></div>"
+            )
+            sections.append(f"<div>Available folders: {available_labels}</div>")
+            inference_status_box.text = "".join(sections)
+            return
+
+        list_items: list[str] = []
+        union_keys: set[tuple[str, int]] = set()
+        sum_unique_keys = 0
+
+        for entry in selected_entries:
+            summary = get_inference_summary(entry)
+            label = html.escape(str(entry["label"]))
+            error = summary.get("error")
+            if error:
+                list_items.append(
+                    f"<li><strong>{label}</strong>: {html.escape(str(error))}</li>"
+                )
+                continue
+
+            keys = summary.get("keys", set())
+            key_count = len(keys)
+            sum_unique_keys += key_count
+            union_keys.update(keys)
+
+            if current_embedding_keys_error:
+                embedding_match = "n/a"
+            else:
+                embedding_match = str(len(keys & current_embedding_keys_cache))
+
+            if current_metadata_keys_error:
+                metadata_match = "n/a"
+            else:
+                metadata_match = str(len(keys & current_metadata_keys_cache))
+
+            list_items.append(
+                f"<li><strong>{label}</strong>: {summary.get('raw_rows', 0)} rows, "
+                f"{key_count} parsed keys, matches embeddings {embedding_match}, "
+                f"matches metadata {metadata_match}</li>"
+            )
+
+        if union_keys:
+            overlap_count = max(0, sum_unique_keys - len(union_keys))
+            if current_embedding_keys_error:
+                union_embedding_match = "n/a"
+            else:
+                union_embedding_match = str(
+                    len(union_keys & current_embedding_keys_cache)
+                )
+
+            if current_metadata_keys_error:
+                union_metadata_match = "n/a"
+            else:
+                union_metadata_match = str(len(union_keys & current_metadata_keys_cache))
+
+            overlap_text = (
+                f", overlapping keys across selections {overlap_count}"
+                if overlap_count
+                else ""
+            )
+            list_items.append(
+                "<li><strong>Union of selected inference.csv files</strong>: "
+                f"{len(union_keys)} unique keys, matches embeddings "
+                f"{union_embedding_match}, matches metadata {union_metadata_match}"
+                f"{overlap_text}</li>"
+            )
+
+        sections.append("<ul>" + "".join(list_items) + "</ul>")
+        if not inference_only_checkbox.active:
+            sections.append(
+                "<div><em>Selections are ready, but they will only affect UMAP when "
+                "'Filter to inference.csv' is enabled.</em></div>"
+            )
+        inference_status_box.text = "".join(sections)
+
     def on_color_mode_change(attr: str, old: str, new: str) -> None:
         update_color_assignments()
         apply_color_selection()
@@ -2206,6 +2530,24 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         recordist_limit_spinner.disabled = not bool(new)
 
     recordist_only_checkbox.on_change("active", on_recordist_toggle_change)
+
+    def on_inference_toggle_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        """Refresh inference sanity text when the filter toggle changes."""
+
+        update_inference_status_box()
+
+    inference_only_checkbox.on_change("active", on_inference_toggle_change)
+
+    def on_inference_selection_change(
+        attr: str, old: list[int], new: list[int]
+    ) -> None:
+        """Refresh inference sanity text when the selected files change."""
+
+        update_inference_status_box()
+
+    inference_csv_checkbox_group.on_change("active", on_inference_selection_change)
 
     def on_hdbscan_options_changed() -> None:
         """Reset HDBSCAN results when auxiliary clustering settings change."""
@@ -5354,6 +5696,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         nonlocal ingroup_lookup, ingroup_lookup_error
         nonlocal ingroup_energy_by_key, ingroup_energy_error
         nonlocal ingroup_window_ids_by_key, ingroup_window_ids_error
+        nonlocal current_inference_entries, inference_summary_cache
+        nonlocal current_embedding_keys_cache, current_embedding_keys_error
+        nonlocal current_metadata_keys_cache, current_metadata_keys_error
         species_slug = species_select.value
         groups_by_category = collect_groups_for_species(groups_root, species_slug)
         rebuild_checkboxes(groups_by_category)
@@ -5365,6 +5710,19 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         reconciliation_box.text = "<em>Press Calculate for reconciliation stats.</em>"
         current_species_slug = species_slug
         current_embeddings_path = root_path / "embeddings" / species_slug / "embeddings.csv"
+        current_inference_entries = collect_species_inference_csvs(root_path, species_slug)
+        inference_summary_cache = {}
+        current_embedding_keys_cache = set()
+        current_embedding_keys_error = None
+        current_metadata_keys_cache = set()
+        current_metadata_keys_error = None
+        inference_only_checkbox.active = []
+        inference_only_checkbox.disabled = not bool(current_inference_entries)
+        inference_csv_checkbox_group.labels = [
+            str(entry["label"]) for entry in current_inference_entries
+        ]
+        inference_csv_checkbox_group.active = []
+        inference_csv_checkbox_group.disabled = not bool(current_inference_entries)
         ingroup_lookup = None
         ingroup_lookup_error = None
         ingroup_energy_by_key = {}
@@ -5424,6 +5782,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 metadata_total = 0
                 metadata_unique = 0
         all_toggle_count.text = f"(raw: {metadata_total}, unique: {metadata_unique})"
+        load_current_embedding_keys()
+        load_current_metadata_keys()
         current_umap_projection = None
         current_umap_metadata = None
         clear_active_pcp_groups(show_status=False)
@@ -5475,6 +5835,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             "<em>PCA will run on selected groups or all recordings.</em>"
         )
         missing_metadata_warning.visible = False
+        update_inference_status_box()
 
     load_button.on_click(load_species_groups)
 
@@ -5774,10 +6135,46 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
         energy_only = bool(energy_only_checkbox.active)
         recordist_only = bool(recordist_only_checkbox.active)
+        inference_only = bool(inference_only_checkbox.active)
         energy_filtered = 0
+        inference_filtered = 0
         recordist_filtered = 0
         recordist_limit = 0
         energy_series: pd.Series | None = None
+        inference_keys: set[tuple[str, int]] = set()
+        selected_inference_labels: list[str] = []
+
+        if inference_only:
+            chosen_inference_entries = selected_inference_entries()
+            if not chosen_inference_entries:
+                umap_status_box.text = (
+                    "<em>Select at least one inference.csv folder before "
+                    "enabling this filter.</em>"
+                )
+                missing_metadata_warning.visible = False
+                return
+
+            for entry in chosen_inference_entries:
+                summary = get_inference_summary(entry)
+                error = summary.get("error")
+                if error:
+                    umap_status_box.text = (
+                        "<em>Selected inference.csv "
+                        f"'{html.escape(str(entry['label']))}' is invalid: "
+                        f"{html.escape(str(error))}</em>"
+                    )
+                    missing_metadata_warning.visible = False
+                    return
+                selected_inference_labels.append(str(entry["label"]))
+                inference_keys.update(summary.get("keys", set()))
+
+            if not inference_keys:
+                umap_status_box.text = (
+                    "<em>The selected inference.csv files did not yield usable "
+                    "recording keys.</em>"
+                )
+                missing_metadata_warning.visible = False
+                return
 
         if energy_only or recordist_only:
             energy_series = energy_distance_series(
@@ -5807,6 +6204,27 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                     selected_metadata.loc[energy_mask].reset_index(drop=True)
                 )
                 energy_series = energy_series.loc[energy_mask].reset_index(drop=True)
+
+        if inference_only:
+            inference_mask = selected_embeddings["__key__"].isin(inference_keys)
+            if not inference_mask.any():
+                umap_status_box.text = (
+                    "<em>No recordings matched the selected inference.csv files.</em>"
+                )
+                missing_metadata_warning.visible = False
+                return
+            inference_filtered = int(len(inference_mask) - inference_mask.sum())
+            if inference_filtered:
+                selected_embeddings = (
+                    selected_embeddings.loc[inference_mask].reset_index(drop=True)
+                )
+                selected_metadata = (
+                    selected_metadata.loc[inference_mask].reset_index(drop=True)
+                )
+                if energy_series is not None:
+                    energy_series = (
+                        energy_series.loc[inference_mask].reset_index(drop=True)
+                    )
 
         if recordist_only:
             recordist_col = find_recordist_column(selected_metadata)
@@ -5954,6 +6372,15 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 f" Energy distance filter removed {energy_filtered} recordings."
                 if energy_filtered
                 else " Energy distance filter applied."
+            )
+            umap_status_box.text += suffix
+        if inference_only:
+            suffix = (
+                f" Inference filter used {len(selected_inference_labels)} "
+                f"inference.csv files and removed {inference_filtered} recordings."
+                if inference_filtered
+                else f" Inference filter used {len(selected_inference_labels)} "
+                "inference.csv files."
             )
             umap_status_box.text += suffix
         if recordist_only:
@@ -6636,6 +7063,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         row(all_toggle_label, all_toggle_count, all_toggle, sizing_mode="fixed"),
         energy_only_checkbox,
         row(recordist_only_checkbox, recordist_limit_spinner, sizing_mode="fixed"),
+        inference_only_checkbox,
+        inference_csv_header,
+        inference_csv_checkbox_group,
+        inference_status_box,
         checkbox_sections_holder,
         width=520,
         sizing_mode="fixed",
