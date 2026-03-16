@@ -143,7 +143,7 @@ MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "20pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Phylloscopus collybita"
+MAP_TITLE_TEXT = "Emberiza citrinella"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
@@ -185,10 +185,10 @@ HISTOGRAM_Y_PADDING = 1.1
 
 # Monthly sample size
 MONTHLY_SAMPLE_TITLE_TEXT = "Monthly sample size"
-MONTHLY_SAMPLE_WIDTH = 2400
-MONTHLY_SAMPLE_HEIGHT = 500
-#MONTHLY_SAMPLE_WIDTH = 700
-#MONTHLY_SAMPLE_HEIGHT = 300
+#MONTHLY_SAMPLE_WIDTH = 2400
+#MONTHLY_SAMPLE_HEIGHT = 500
+MONTHLY_SAMPLE_WIDTH = 700
+MONTHLY_SAMPLE_HEIGHT = 300
 MONTHLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
 MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
 MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
@@ -2467,6 +2467,11 @@ def format_frame_label(start: pd.Timestamp, end: pd.Timestamp) -> str:
     return f"{start.strftime('%Y-%m')} to {end_label}"
 
 
+def get_frame_display_year(end: pd.Timestamp) -> int:
+    """Return the year of the last included month in an animation window."""
+    return int((end - pd.DateOffset(days=1)).year)
+
+
 def compute_monthly_histogram(date_series: pd.Series) -> np.ndarray:
     """Return counts per calendar month, aggregating across years."""
     if date_series.empty:
@@ -2558,7 +2563,7 @@ def build_animation_frames(
                 "title": build_map_title_text(species_slug),
                 "frame_label": f"Window: {frame_label}",
                 "bandwidth_text": bandwidth_text,
-                "year_text": f"{start.year}",
+                "year_text": f"{get_frame_display_year(end)}",
                 "histogram": histogram,
                 "hist_max": hist_max,
             }
