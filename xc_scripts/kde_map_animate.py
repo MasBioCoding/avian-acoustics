@@ -4,7 +4,11 @@ Visualize an ingroup's geographic distribution with KDE isoclines on a map.
 Edit the paths and settings below, then run:
     python xc_scripts/kde_map_animate.py
     python xc_scripts/kde_map_animate.py --animate
+    python xc_scripts/kde_map_animate.py --animate --logit -0
+    python xc_scripts/kde_map_animate.py --animate --savepng --logit 0
     python xc_scripts/kde_map_animate.py --interactive
+    python xc_scripts/kde_map_animate.py --interactive --savepng
+    python xc_scripts/kde_map_animate.py --interactive --minlogit 0 --savepng
 
 Interactive mode starts a local Bokeh server with a KDE scale input and
 "Recalculate KDE" button for the static map.
@@ -68,10 +72,15 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
+ANIMATION_PNG_OUTPUT_DIR = Path(
+    "/Users/masjansma/Desktop/scriptie/results/statics/prunella_modularis/bursts"
+)
+INTERACTIVE_PNG_OUTPUT_DIR = ANIMATION_PNG_OUTPUT_DIR / "static"
+ANIMATION_PNG_SCALE_FACTOR = 1
 
 FILTER_ONE_PER_RECORDIST = True
 
@@ -85,15 +94,15 @@ DATE_FILTER_MODE = (
     "range"  # "all", "recent", "exclude_recent", or "range"
 )
 DATE_FILTER_YEARS = 3
-DATE_RANGE_START = "2014-01-01"  # Used when mode="range".
-DATE_RANGE_END = "2026-11-12"  # Used when mode="range".
+DATE_RANGE_START = "2013-12-30"  # Used when mode="range".
+DATE_RANGE_END = "2026-01-01"  # Used when mode="range".
 # Examples: "2014", "2014-01", "2014-01-01"
 DATE_PARSE_FORMAT = "%m/%d/%Y"
 DATE_PARSE_DAYFIRST = False
 DATE_PARSE_FALLBACK = True
 
 KDE_GRID_SIZE = 256
-BANDWIDTH_METHOD = "knn"  # "cv", "scott", "knn", or "manual" (after scaling)
+BANDWIDTH_METHOD = "cv"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
@@ -141,9 +150,9 @@ LAND_FILL_ALPHA = 1.0
 MAP_BASE_PROVIDER = "Esri.WorldPhysical"
 MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
-MAP_TITLE_FONT_SIZE = "20pt"
+MAP_TITLE_FONT_SIZE = "72pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Emberiza citrinella"
+MAP_TITLE_TEXT = "Prunella modularis"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
@@ -181,14 +190,25 @@ MONTH_LABELS = [
     "Nov",
     "Dec",
 ]
+HOUR_LABELS = [f"{hour:02d}" for hour in range(24)]
+TIME_COLUMN_CANDIDATES = (
+    "time",
+    "recording_time",
+    "event_time",
+    "obs_time",
+    "hour",
+    "recording_datetime",
+    "datetime",
+)
+TIME_OF_DAY_PATTERN = re.compile(r"(\d{1,2})[:h](\d{1,2})(?:[:m](\d{1,2}))?")
 HISTOGRAM_Y_PADDING = 1.1
 
 # Monthly sample size
 MONTHLY_SAMPLE_TITLE_TEXT = "Monthly sample size"
-#MONTHLY_SAMPLE_WIDTH = 2400
-#MONTHLY_SAMPLE_HEIGHT = 500
-MONTHLY_SAMPLE_WIDTH = 700
-MONTHLY_SAMPLE_HEIGHT = 300
+MONTHLY_SAMPLE_WIDTH = 2400
+MONTHLY_SAMPLE_HEIGHT = 500
+#MONTHLY_SAMPLE_WIDTH = 700
+#MONTHLY_SAMPLE_HEIGHT = 300
 MONTHLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
 MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
 MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
@@ -216,6 +236,22 @@ YEARLY_SAMPLE_POINT_COLOR = "#73D055FF"
 YEARLY_SAMPLE_ALPHA = 0.85
 YEARLY_SAMPLE_LINE_WIDTH = 5
 YEARLY_SAMPLE_POINT_SIZE = 10
+# Show the DATE_RANGE_END year on the yearly axis even if no samples survive filtering.
+YEARLY_SAMPLE_INCLUDE_RANGE_END_YEAR = False
+
+# Hourly sample size
+HOURLY_SAMPLE_TITLE_TEXT = "Hourly sample size"
+HOURLY_SAMPLE_WIDTH = 700
+HOURLY_SAMPLE_HEIGHT = 300
+HOURLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
+HOURLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
+HOURLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
+HOURLY_SAMPLE_AXIS_LABEL_FONT_STYLE = "normal"
+HOURLY_SAMPLE_BACKGROUND_COLOR = MONTHLY_SAMPLE_BACKGROUND_COLOR
+HOURLY_SAMPLE_BORDER_COLOR = MONTHLY_SAMPLE_BORDER_COLOR
+HOURLY_SAMPLE_DATAPOINT_COLOR = MONTHLY_SAMPLE_DATAPOINT_COLOR
+HOURLY_SAMPLE_DATAPOINT_ALPHA = MONTHLY_SAMPLE_DATAPOINT_ALPHA
+HOURLY_SAMPLE_BAR_WIDTH = 0.9
 
 ANIMATION_WINDOW_MONTHS = 12  # 1-year window per frame.
 ANIMATION_STEP_MONTHS = 1  # Advance one month per frame.
@@ -247,6 +283,30 @@ class Isopleth:
     probability: float
     level: float
     paths: list[np.ndarray]
+
+
+@dataclass(frozen=True)
+class FrameWindow:
+    """Date window metadata for animation frames and yearly PNG snapshots."""
+
+    start: pd.Timestamp
+    end_exclusive: pd.Timestamp
+    label: str
+    year_text: str
+    file_stub: str
+
+
+@dataclass
+class InteractiveLayoutBundle:
+    """Container for the interactive layout and its exportable plots."""
+
+    layout: LayoutDOM
+    point_source: ColumnDataSource
+    playlist_div: Div
+    map_plot: Any
+    monthly_plot: Any
+    yearly_plot: Any
+    hourly_plot: Any
 
 
 _STATIC_HTTP_SERVERS: dict[str, dict[str, Any]] = {}
@@ -329,6 +389,7 @@ def start_static_file_server(
     }
     return base_url
 
+
 def read_csv(path: Path) -> pd.DataFrame:
     """Read a CSV file or raise a helpful error."""
     if not path.exists():
@@ -363,6 +424,18 @@ def normalize_clip_index(value: object) -> str:
     if digits:
         return f"{int(digits):02d}"
     return text
+
+
+def find_column_case_insensitive(
+    columns: Iterable[object], candidates: Sequence[str]
+) -> str | None:
+    """Return the first matching column name from a candidate list."""
+    column_map = {str(column).lower(): str(column) for column in columns}
+    for candidate in candidates:
+        match = column_map.get(candidate.lower())
+        if match:
+            return match
+    return None
 
 
 def parse_date_column(series: pd.Series) -> tuple[pd.Series, int]:
@@ -432,6 +505,52 @@ def format_timestamp(value: pd.Timestamp) -> str:
     if value.hour or value.minute or value.second or value.microsecond:
         return value.isoformat(sep=" ")
     return str(value.date())
+
+
+def get_time_series(df: pd.DataFrame) -> pd.Series:
+    """Return the most likely time-of-day column as a Series."""
+    time_col = find_column_case_insensitive(df.columns, TIME_COLUMN_CANDIDATES)
+    if time_col is None:
+        return pd.Series(np.nan, index=df.index, dtype=object)
+    return df[time_col]
+
+
+def parse_time_to_seconds(value: object) -> float:
+    """Parse a time-like value to seconds since midnight."""
+    if value is None:
+        return float("nan")
+    try:
+        if pd.isna(value):
+            return float("nan")
+    except TypeError:
+        pass
+    if isinstance(value, pd.Timestamp):
+        return float(
+            value.hour * 3600
+            + value.minute * 60
+            + value.second
+            + value.microsecond / 1_000_000.0
+        )
+
+    raw = str(value).strip()
+    if not raw:
+        return float("nan")
+    lower = raw.lower()
+    if lower in {"nan", "none", "null", "na", "n/a", "unknown", "?"}:
+        return float("nan")
+
+    match = TIME_OF_DAY_PATTERN.search(lower)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        second = int(match.group(3) or "0")
+        if 0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60:
+            return float(hour * 3600 + minute * 60 + second)
+
+    parsed = pd.to_datetime(raw, errors="coerce")
+    if pd.isna(parsed):
+        return float("nan")
+    return float(parsed.hour * 3600 + parsed.minute * 60 + parsed.second)
 
 
 def prepare_inference_table(path: Path) -> pd.DataFrame:
@@ -639,6 +758,32 @@ def filter_top_logit_per_recordist(
             f"[INFO] Recordist filter kept {len(combined)} of {len(df)} rows."
         )
     return combined
+
+
+def filter_min_logit(
+    df: pd.DataFrame, min_logit: float | None, *, log: bool = True
+) -> pd.DataFrame:
+    """Keep rows with logits at or above the requested minimum."""
+    if min_logit is None:
+        return df
+    if "logits" not in df.columns:
+        raise SystemExit(
+            "Animation logit filtering requires a 'logits' column in inference."
+        )
+
+    filtered = df.copy()
+    filtered["logits"] = pd.to_numeric(filtered["logits"], errors="coerce")
+    finite = np.isfinite(filtered["logits"])
+    mask = finite & (filtered["logits"] >= float(min_logit))
+    result = filtered.loc[mask].copy()
+
+    if log:
+        dropped_invalid = int((~finite).sum())
+        print(
+            f"[INFO] Logit filter kept {len(result)} of {len(df)} rows "
+            f"(min_logit={float(min_logit):.3f}, invalid={dropped_invalid})."
+        )
+    return result
 
 
 def prepare_points(df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
@@ -1599,6 +1744,17 @@ def infer_logit_step(logit_min: float, logit_max: float) -> float:
     return 0.5
 
 
+def resolve_initial_logit_range(
+    slider_min: float,
+    slider_max: float,
+    initial_min_logit: float | None,
+) -> tuple[float, float]:
+    """Return the initial slider value while keeping the full slider bounds."""
+    if initial_min_logit is None:
+        return slider_min, slider_max
+    return min(max(float(initial_min_logit), slider_min), slider_max), slider_max
+
+
 def build_spectrogram_url(
     *,
     filename: str,
@@ -1974,6 +2130,7 @@ def build_static_interactive_layout(
     lat: np.ndarray,
     points_eq: np.ndarray,
     logit_range: tuple[float, float] | None = None,
+    initial_min_logit: float | None = None,
     spectrogram_dir: Path | None = None,
     spectrogram_base_url: str | None = None,
     spectrogram_image_format: str = "png",
@@ -1981,7 +2138,7 @@ def build_static_interactive_layout(
     audio_base_url: str | None = None,
     species_slug: str = "unknown_species",
     playlist_max_items: int | None = None,
-) -> tuple[LayoutDOM, ColumnDataSource, Div]:
+) -> InteractiveLayoutBundle:
     """Build the interactive static KDE layout with controls."""
     point_transformer = Transformer.from_crs(
         "EPSG:4326", "EPSG:3857", always_xy=True
@@ -2099,7 +2256,9 @@ def build_static_interactive_layout(
         title="Logit range",
         start=slider_min,
         end=slider_max,
-        value=(slider_min, slider_max),
+        value=resolve_initial_logit_range(
+            slider_min, slider_max, initial_min_logit
+        ),
         step=infer_logit_step(slider_min, slider_max),
         width=320,
         disabled=not slider_enabled,
@@ -2111,6 +2270,7 @@ def build_static_interactive_layout(
         date_series = points_df["date"]
     else:
         date_series = pd.Series([pd.NaT] * len(points_df))
+    time_series = get_time_series(points_df)
 
     def build_histogram_data(mask: np.ndarray) -> dict[str, list]:
         counts = compute_monthly_histogram(date_series[mask])
@@ -2119,20 +2279,29 @@ def build_static_interactive_layout(
     hist_max = int(compute_monthly_histogram(date_series).max())
     hist_max = max(hist_max, 1)
 
-    yearly_all = compute_yearly_histogram(date_series)
-    if yearly_all.empty:
-        year_labels = ["n/a"]
-        year_max = 1
-    else:
-        year_labels = [str(year) for year in yearly_all.index]
-        year_max = max(int(yearly_all.max()), 1)
+    def build_hourly_data(mask: np.ndarray) -> dict[str, list]:
+        counts = compute_hourly_histogram(time_series[mask])
+        return {"hour": HOUR_LABELS, "count": counts.astype(int).tolist()}
+
+    hour_max = int(compute_hourly_histogram(time_series).max())
+    hour_max = max(hour_max, 1)
+
+    year_labels, _missing_years, year_max = get_yearly_axis_years(
+        date_series
+    )
 
     def build_yearly_data(mask: np.ndarray) -> dict[str, list]:
         if year_labels == ["n/a"]:
             return {"year": year_labels, "count": [0]}
         counts = compute_yearly_histogram(date_series[mask])
         count_map = {int(year): int(count) for year, count in counts.items()}
-        values = [int(count_map.get(int(year), 0)) for year in year_labels]
+        values: list[float] = []
+        for year_label in year_labels:
+            year = int(year_label)
+            if year in count_map:
+                values.append(float(count_map[year]))
+            else:
+                values.append(float("nan"))
         return {"year": year_labels, "count": values}
 
     playlist_title = Div(text="<b>Playlist</b>")
@@ -2187,82 +2356,17 @@ def build_static_interactive_layout(
         finite = np.isfinite(point_logits)
         return finite & (point_logits >= min_val) & (point_logits <= max_val)
 
-    hist_source = ColumnDataSource(build_histogram_data(build_logit_mask()))
-    hist_plot = figure(
-        title=MONTHLY_SAMPLE_TITLE_TEXT,
-        x_range=MONTH_LABELS,
-        y_range=(0, hist_max * HISTOGRAM_Y_PADDING),
-        width=MONTHLY_SAMPLE_WIDTH,
-        height=MONTHLY_SAMPLE_HEIGHT,
-        tools="",
-        toolbar_location=None,
-    )
-    hist_plot.vbar(
-        x="month",
-        top="count",
-        width=0.9,
-        source=hist_source,
-        color=MONTHLY_SAMPLE_DATAPOINT_COLOR,
-        alpha=MONTHLY_SAMPLE_DATAPOINT_ALPHA,
-    )
-    hist_plot.xgrid.grid_line_color = None
-    hist_plot.title.text_font_size = MONTHLY_SAMPLE_TITLE_FONT_SIZE
-    hist_plot.background_fill_color = MONTHLY_SAMPLE_BACKGROUND_COLOR
-    hist_plot.border_fill_color = MONTHLY_SAMPLE_BORDER_COLOR
-    hist_plot.yaxis.axis_label = "Observations"
-    hist_plot.xaxis.axis_label = "Month"
-    hist_plot.xaxis.axis_label_text_font_size = MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE
-    hist_plot.yaxis.axis_label_text_font_size = MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE
-    hist_plot.xaxis.axis_label_text_font_style = MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE
-    hist_plot.yaxis.axis_label_text_font_style = MONTHLY_SAMPLE_AXIS_LABEL_FONT_STYLE
-    hist_plot.xaxis.major_label_text_font_size = (
-        MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
-    )
-    hist_plot.yaxis.major_label_text_font_size = (
-        MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    initial_mask = build_logit_mask()
+    hist_plot, hist_source = build_monthly_histogram_figure(
+        build_histogram_data(initial_mask), hist_max
     )
 
-    year_source = ColumnDataSource(build_yearly_data(build_logit_mask()))
-    year_plot = figure(
-        title=YEARLY_SAMPLE_TITLE_TEXT,
-        x_range=year_labels,
-        y_range=(0, year_max * HISTOGRAM_Y_PADDING),
-        width=YEARLY_SAMPLE_WIDTH,
-        height=YEARLY_SAMPLE_HEIGHT,
-        tools="",
-        toolbar_location=None,
+    hour_plot, hour_source = build_hourly_histogram_figure(
+        build_hourly_data(initial_mask), hour_max
     )
-    year_plot.line(
-        x="year",
-        y="count",
-        source=year_source,
-        line_color=YEARLY_SAMPLE_LINE_COLOR,
-        line_width=YEARLY_SAMPLE_LINE_WIDTH,
-        alpha=YEARLY_SAMPLE_ALPHA,
-    )
-    year_plot.circle(
-        x="year",
-        y="count",
-        source=year_source,
-        size=YEARLY_SAMPLE_POINT_SIZE,
-        color=YEARLY_SAMPLE_POINT_COLOR,
-        alpha=YEARLY_SAMPLE_ALPHA,
-    )
-    year_plot.xgrid.grid_line_color = None
-    year_plot.title.text_font_size = YEARLY_SAMPLE_TITLE_FONT_SIZE
-    year_plot.background_fill_color = YEARLY_SAMPLE_BACKGROUND_COLOR
-    year_plot.border_fill_color = YEARLY_SAMPLE_BORDER_COLOR
-    year_plot.yaxis.axis_label = "Observations"
-    year_plot.xaxis.axis_label = "Year"
-    year_plot.xaxis.axis_label_text_font_size = YEARLY_SAMPLE_AXIS_LABEL_FONT_SIZE
-    year_plot.yaxis.axis_label_text_font_size = YEARLY_SAMPLE_AXIS_LABEL_FONT_SIZE
-    year_plot.xaxis.axis_label_text_font_style = YEARLY_SAMPLE_AXIS_LABEL_FONT_STYLE
-    year_plot.yaxis.axis_label_text_font_style = YEARLY_SAMPLE_AXIS_LABEL_FONT_STYLE
-    year_plot.xaxis.major_label_text_font_size = (
-        YEARLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
-    )
-    year_plot.yaxis.major_label_text_font_size = (
-        YEARLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+
+    year_plot, year_source = build_yearly_sample_figure(
+        build_yearly_data(initial_mask), year_labels, year_max
     )
 
     def update_points(*, update_playlist: bool = True) -> np.ndarray:
@@ -2271,6 +2375,9 @@ def build_static_interactive_layout(
             key: values[mask].tolist() for key, values in base_arrays.items()
         }
         point_source.selected.indices = []
+        hist_source.data = build_histogram_data(mask)
+        year_source.data = build_yearly_data(mask)
+        hour_source.data = build_hourly_data(mask)
         count_div.text = f"Points shown: {int(mask.sum())} of {len(point_logits)}"
         if update_playlist:
             data = point_source.data
@@ -2299,7 +2406,9 @@ def build_static_interactive_layout(
 
     def on_logit_change(attr: str, old: object, new: object) -> None:
         update_points(update_playlist=False)
-        status_div.text = "Logit filter updated. Press Recalculate KDE to refresh playlist."
+        status_div.text = (
+            "Logit filter updated. Press Recalculate KDE to refresh KDE and playlist."
+        )
 
     logit_slider.on_change("value", on_logit_change)
 
@@ -2378,8 +2487,6 @@ def build_static_interactive_layout(
         for draw_idx, data in enumerate(rendered_data):
             iso_sources[draw_idx].data = data
         bandwidth_div.text = format_bandwidth_text(updated_bw)
-        hist_source.data = build_histogram_data(mask)
-        year_source.data = build_yearly_data(mask)
         if np.isfinite(updated_bw):
             status_div.text = (
                 f"Updated KDE with scale {scale_value:.3f} "
@@ -2397,10 +2504,18 @@ def build_static_interactive_layout(
         row(logit_slider, count_div),
         status_div,
     )
-    map_panel = column(plot, row(hist_plot, year_plot), controls)
+    map_panel = column(plot, row(hist_plot, year_plot, hour_plot), controls)
     playlist_panel = column(playlist_title, playlist_div, width=PLAYLIST_WIDTH)
     layout = row(map_panel, playlist_panel)
-    return layout, point_source, playlist_div
+    return InteractiveLayoutBundle(
+        layout=layout,
+        point_source=point_source,
+        playlist_div=playlist_div,
+        map_plot=plot,
+        monthly_plot=hist_plot,
+        yearly_plot=year_plot,
+        hourly_plot=hour_plot,
+    )
 
 
 def prepare_base_dataframe() -> pd.DataFrame:
@@ -2427,7 +2542,7 @@ def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_monthly_windows(
     date_series: pd.Series, window_months: int, step_months: int
-) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+) -> list[FrameWindow]:
     """Build monthly sliding windows for the animation."""
     if window_months <= 0:
         raise SystemExit("ANIMATION_WINDOW_MONTHS must be > 0.")
@@ -2455,10 +2570,93 @@ def build_monthly_windows(
             frame_starts.append(current)
             current += step
 
-    return [
-        (frame_start, frame_start + pd.DateOffset(months=window_months))
-        for frame_start in frame_starts
-    ]
+    windows: list[FrameWindow] = []
+    for frame_start in frame_starts:
+        frame_end = frame_start + pd.DateOffset(months=window_months)
+        end_inclusive = frame_end - pd.Timedelta(days=1)
+        windows.append(
+            FrameWindow(
+                start=frame_start,
+                end_exclusive=frame_end,
+                label=f"Window: {format_frame_label(frame_start, frame_end)}",
+                year_text=f"{get_frame_display_year(frame_end)}",
+                file_stub=build_window_file_stub(frame_start, end_inclusive),
+            )
+        )
+    return windows
+
+
+def build_window_file_stub(
+    start: pd.Timestamp, end_inclusive: pd.Timestamp
+) -> str:
+    """Build a filesystem-friendly filename stub for a date window."""
+    return (
+        f"{start.strftime('%Y-%m-%d')}"
+        f"_to_{end_inclusive.strftime('%Y-%m-%d')}"
+    )
+
+
+def build_snapshot_windows(date_series: pd.Series) -> list[FrameWindow]:
+    """Build yearly PNG snapshot windows from the dataset date span."""
+    if date_series.empty:
+        return []
+
+    normalized = pd.to_datetime(
+        date_series, errors="coerce", dayfirst=DATE_PARSE_DAYFIRST
+    ).dropna()
+    if normalized.empty:
+        return []
+    normalized = normalized.dt.normalize()
+
+    min_date = normalized.min()
+    max_date = normalized.max()
+    if pd.isna(min_date) or pd.isna(max_date):
+        return []
+
+    start_of_min_year = pd.Timestamp(year=min_date.year, month=1, day=1)
+    end_of_max_year = pd.Timestamp(year=max_date.year, month=12, day=31)
+    first_full_year = (
+        min_date.year if min_date == start_of_min_year else min_date.year + 1
+    )
+    last_full_year = (
+        max_date.year if max_date == end_of_max_year else max_date.year - 1
+    )
+
+    windows: list[FrameWindow] = []
+    for year in range(first_full_year, last_full_year + 1):
+        start = pd.Timestamp(year=year, month=1, day=1)
+        end_inclusive = pd.Timestamp(year=year, month=12, day=31)
+        windows.append(
+            FrameWindow(
+                start=start,
+                end_exclusive=end_inclusive + pd.Timedelta(days=1),
+                label=(
+                    "Window: "
+                    f"{start.strftime('%Y-%m-%d')} to "
+                    f"{end_inclusive.strftime('%Y-%m-%d')}"
+                ),
+                year_text=f"{year}",
+                file_stub=build_window_file_stub(start, end_inclusive),
+            )
+        )
+
+    if max_date < end_of_max_year:
+        trailing_start = max(max_date - pd.DateOffset(years=1), min_date)
+        windows.append(
+            FrameWindow(
+                start=trailing_start,
+                end_exclusive=max_date + pd.Timedelta(days=1),
+                label=(
+                    "Window: "
+                    f"{trailing_start.strftime('%Y-%m-%d')} to "
+                    f"{max_date.strftime('%Y-%m-%d')}"
+                ),
+                year_text=f"{max_date.year}",
+                file_stub=build_window_file_stub(trailing_start, max_date),
+            )
+        )
+
+    return windows
 
 
 def format_frame_label(start: pd.Timestamp, end: pd.Timestamp) -> str:
@@ -2486,6 +2684,21 @@ def compute_monthly_histogram(date_series: pd.Series) -> np.ndarray:
     return counts
 
 
+def compute_hourly_histogram(time_series: pd.Series) -> np.ndarray:
+    """Return counts per hour of day, aggregating across dates."""
+    if time_series.empty:
+        return np.zeros(24, dtype=int)
+    seconds = np.array(
+        [parse_time_to_seconds(value) for value in time_series],
+        dtype=float,
+    )
+    valid = np.isfinite(seconds)
+    if not valid.any():
+        return np.zeros(24, dtype=int)
+    hours = np.floor(np.mod(seconds[valid], 86_400.0) / 3_600.0).astype(int)
+    return np.bincount(hours, minlength=24)[:24]
+
+
 def compute_yearly_histogram(date_series: pd.Series) -> pd.Series:
     """Return counts per year for the provided dates."""
     if date_series.empty:
@@ -2499,9 +2712,34 @@ def compute_yearly_histogram(date_series: pd.Series) -> pd.Series:
     return years.value_counts().sort_index()
 
 
+def get_yearly_axis_years(date_series: pd.Series) -> tuple[list[str], set[int], int]:
+    """Build a continuous yearly axis and track years missing from the data."""
+    yearly_all = compute_yearly_histogram(date_series)
+    if yearly_all.empty:
+        return ["n/a"], set(), 1
+
+    observed_years = [int(year) for year in yearly_all.index]
+    axis_start_year = observed_years[0]
+    axis_end_year = observed_years[-1]
+
+    if str(DATE_FILTER_MODE).strip().lower() == "range":
+        start_value, _ = parse_date_range_endpoint(DATE_RANGE_START, is_end=False)
+        end_value, _ = parse_date_range_endpoint(DATE_RANGE_END, is_end=True)
+        if start_value is not None:
+            axis_start_year = min(axis_start_year, int(start_value.year))
+        if YEARLY_SAMPLE_INCLUDE_RANGE_END_YEAR and end_value is not None:
+            axis_end_year = max(axis_end_year, int(end_value.year))
+
+    year_values = list(range(axis_start_year, axis_end_year + 1))
+    missing_years = set(year_values) - set(observed_years)
+
+    year_max = max(int(yearly_all.max()), 1)
+    return [str(year) for year in year_values], missing_years, year_max
+
+
 def build_animation_frames(
     df: pd.DataFrame,
-    windows: Sequence[tuple[pd.Timestamp, pd.Timestamp]],
+    windows: Sequence[FrameWindow],
     probabilities: Sequence[float],
     point_transformer: Transformer,
     equal_area: Transformer,
@@ -2513,8 +2751,8 @@ def build_animation_frames(
     frames: list[dict[str, object]] = []
     render_order = list(range(len(probabilities) - 1, -1, -1))
 
-    for start, end in windows:
-        mask = (date_series >= start) & (date_series < end)
+    for window in windows:
+        mask = (date_series >= window.start) & (date_series < window.end_exclusive)
         frame_df = df.loc[mask].copy()
         frame_df = filter_top_logit_per_recordist(frame_df, log=False)
         points_df, lon, lat = prepare_points(frame_df)
@@ -2552,7 +2790,6 @@ def build_animation_frames(
             isopleth_sources, render_order
         )
 
-        frame_label = format_frame_label(start, end)
         bandwidth_text = format_bandwidth_text(bandwidth)
 
         frames.append(
@@ -2561,44 +2798,43 @@ def build_animation_frames(
                 "isopleths": isopleth_sources,
                 "isopleth_bands": isopleth_bands,
                 "title": build_map_title_text(species_slug),
-                "frame_label": f"Window: {frame_label}",
+                "frame_label": window.label,
                 "bandwidth_text": bandwidth_text,
-                "year_text": f"{get_frame_display_year(end)}",
+                "year_text": window.year_text,
                 "histogram": histogram,
                 "hist_max": hist_max,
+                "file_stub": window.file_stub,
             }
         )
 
     return frames
 
 
-def plot_animated_map(
-    frames: list[dict[str, object]],
+def compute_animation_hist_max(frames: Sequence[dict[str, object]]) -> int:
+    """Return the global monthly-histogram max across a frame sequence."""
+    hist_max = max(
+        (max(frame["histogram"]["count"]) for frame in frames),
+        default=0,
+    )
+    return max(hist_max, 1)
+
+
+def build_animation_map_figure(
+    frame: dict[str, object],
     probabilities: Sequence[float],
     x_range: Range1d,
     y_range: Range1d,
-    output_html: Path,
-    species_slug: str,
-) -> None:
-    """Render an animated KDE map with a slider and monthly histogram."""
-    if not frames:
-        raise SystemExit("No animation frames to render.")
-
-    first_frame = frames[0]
+) -> tuple[Any, ColumnDataSource, list[ColumnDataSource], Label]:
+    """Build the animated map figure for a single frame."""
     palette = build_heat_palette(len(probabilities))
     stroke_palette = build_isocline_stroke_palette(
         len(probabilities), fill_palette=palette
     )
     use_band_fill = FILL_ISOCLINES and use_band_fill_mode()
     render_order = list(range(len(probabilities) - 1, -1, -1))
-    hist_max = max(
-        (max(frame["histogram"]["count"]) for frame in frames),
-        default=0,
-    )
-    hist_max = max(hist_max, 1)
 
     plot = figure(
-        title=first_frame["title"],
+        title=frame["title"],
         x_axis_type="mercator",
         y_axis_type="mercator",
         match_aspect=True,
@@ -2610,7 +2846,7 @@ def plot_animated_map(
     )
     style_map_figure(plot)
 
-    point_source = ColumnDataSource(first_frame["points"])
+    point_source = ColumnDataSource(frame["points"])
     point_renderer = plot.scatter(
         x="x",
         y="y",
@@ -2637,9 +2873,9 @@ def plot_animated_map(
     for draw_idx, source_idx in enumerate(render_order):
         prob = probabilities[source_idx]
         source_payload = (
-            first_frame["isopleth_bands"][draw_idx]
+            frame["isopleth_bands"][draw_idx]
             if use_band_fill
-            else first_frame["isopleths"][source_idx]
+            else frame["isopleths"][source_idx]
         )
         source = ColumnDataSource(source_payload)
         iso_sources.append(source)
@@ -2685,8 +2921,6 @@ def plot_animated_map(
     if legend_added:
         style_map_legend(plot)
 
-    frame_div = Div(text=first_frame["frame_label"])
-    bandwidth_div = Div(text=first_frame["bandwidth_text"])
     x_start = x_range.start
     x_end = x_range.end
     y_start = y_range.start
@@ -2707,7 +2941,7 @@ def plot_animated_map(
         y=label_y,
         x_units="data",
         y_units="data",
-        text=first_frame["year_text"],
+        text=frame["year_text"],
         text_font_size=ANIMATION_YEAR_LABEL_FONT_SIZE,
         text_font_style="bold",
         text_color="#111111",
@@ -2717,7 +2951,14 @@ def plot_animated_map(
         background_fill_alpha=0.7,
     )
     plot.add_layout(year_label)
-    hist_source = ColumnDataSource(first_frame["histogram"])
+    return plot, point_source, iso_sources, year_label
+
+
+def build_monthly_histogram_figure(
+    histogram: dict[str, list[object]], hist_max: int
+) -> tuple[Any, ColumnDataSource]:
+    """Build the monthly sample-size figure for a single frame."""
+    hist_source = ColumnDataSource(histogram)
     hist_plot = figure(
         title=MONTHLY_SAMPLE_TITLE_TEXT,
         x_range=MONTH_LABELS,
@@ -2750,6 +2991,216 @@ def plot_animated_map(
     )
     hist_plot.yaxis.major_label_text_font_size = (
         MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    return hist_plot, hist_source
+
+
+def build_yearly_sample_figure(
+    histogram: dict[str, list[object]], year_labels: Sequence[str], year_max: int
+) -> tuple[Any, ColumnDataSource]:
+    """Build the yearly sample-size figure."""
+    year_source = ColumnDataSource(histogram)
+    year_plot = figure(
+        title=YEARLY_SAMPLE_TITLE_TEXT,
+        x_range=list(year_labels),
+        y_range=(0, year_max * HISTOGRAM_Y_PADDING),
+        width=YEARLY_SAMPLE_WIDTH,
+        height=YEARLY_SAMPLE_HEIGHT,
+        tools="",
+        toolbar_location=None,
+    )
+    year_plot.line(
+        x="year",
+        y="count",
+        source=year_source,
+        line_color=YEARLY_SAMPLE_LINE_COLOR,
+        line_width=YEARLY_SAMPLE_LINE_WIDTH,
+        alpha=YEARLY_SAMPLE_ALPHA,
+    )
+    year_plot.scatter(
+        x="year",
+        y="count",
+        source=year_source,
+        size=YEARLY_SAMPLE_POINT_SIZE,
+        color=YEARLY_SAMPLE_POINT_COLOR,
+        alpha=YEARLY_SAMPLE_ALPHA,
+    )
+    year_plot.xgrid.grid_line_color = None
+    year_plot.title.text_font_size = YEARLY_SAMPLE_TITLE_FONT_SIZE
+    year_plot.background_fill_color = YEARLY_SAMPLE_BACKGROUND_COLOR
+    year_plot.border_fill_color = YEARLY_SAMPLE_BORDER_COLOR
+    year_plot.yaxis.axis_label = "Observations"
+    year_plot.xaxis.axis_label = "Year"
+    year_plot.xaxis.axis_label_text_font_size = YEARLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    year_plot.yaxis.axis_label_text_font_size = YEARLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    year_plot.xaxis.axis_label_text_font_style = YEARLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    year_plot.yaxis.axis_label_text_font_style = YEARLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    year_plot.xaxis.major_label_text_font_size = (
+        YEARLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    year_plot.yaxis.major_label_text_font_size = (
+        YEARLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    return year_plot, year_source
+
+
+def build_hourly_histogram_figure(
+    histogram: dict[str, list[object]], hist_max: int
+) -> tuple[Any, ColumnDataSource]:
+    """Build the hourly sample-size figure."""
+    hist_source = ColumnDataSource(histogram)
+    hist_plot = figure(
+        title=HOURLY_SAMPLE_TITLE_TEXT,
+        x_range=HOUR_LABELS,
+        y_range=(0, hist_max * HISTOGRAM_Y_PADDING),
+        width=HOURLY_SAMPLE_WIDTH,
+        height=HOURLY_SAMPLE_HEIGHT,
+        tools="",
+        toolbar_location=None,
+    )
+    hist_plot.vbar(
+        x="hour",
+        top="count",
+        width=HOURLY_SAMPLE_BAR_WIDTH,
+        source=hist_source,
+        color=HOURLY_SAMPLE_DATAPOINT_COLOR,
+        alpha=HOURLY_SAMPLE_DATAPOINT_ALPHA,
+    )
+    hist_plot.xgrid.grid_line_color = None
+    hist_plot.title.text_font_size = HOURLY_SAMPLE_TITLE_FONT_SIZE
+    hist_plot.background_fill_color = HOURLY_SAMPLE_BACKGROUND_COLOR
+    hist_plot.border_fill_color = HOURLY_SAMPLE_BORDER_COLOR
+    hist_plot.yaxis.axis_label = "Observations"
+    hist_plot.xaxis.axis_label = "Hour of day"
+    hist_plot.xaxis.axis_label_text_font_size = HOURLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    hist_plot.yaxis.axis_label_text_font_size = HOURLY_SAMPLE_AXIS_LABEL_FONT_SIZE
+    hist_plot.xaxis.axis_label_text_font_style = HOURLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    hist_plot.yaxis.axis_label_text_font_style = HOURLY_SAMPLE_AXIS_LABEL_FONT_STYLE
+    hist_plot.xaxis.major_label_text_font_size = (
+        HOURLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    hist_plot.yaxis.major_label_text_font_size = (
+        HOURLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+    )
+    return hist_plot, hist_source
+
+
+def resolve_png_exporter() -> Any:
+    """Return Bokeh's PNG exporter with a helpful dependency error."""
+    try:
+        from bokeh.io import export_png
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(
+            "PNG export requires Bokeh image-export dependencies: "
+            "'selenium' plus either Chromium/chromedriver or Firefox/geckodriver "
+            "available on PATH."
+        ) from exc
+    return export_png
+
+
+def save_animation_pngs(
+    frames: Sequence[dict[str, object]],
+    probabilities: Sequence[float],
+    x_range: Range1d,
+    y_range: Range1d,
+    output_dir: Path,
+) -> None:
+    """Save per-window map and monthly-histogram PNG snapshots."""
+    if not frames:
+        print("[WARN] No PNG frames to export.")
+        return
+
+    export_png = resolve_png_exporter()
+    hist_max = compute_animation_hist_max(frames)
+    map_dir = output_dir / "maps"
+    monthly_dir = output_dir / "monthly_sample"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    monthly_dir.mkdir(parents=True, exist_ok=True)
+
+    for frame in frames:
+        file_stub = str(frame["file_stub"])
+        map_plot, _, _, _ = build_animation_map_figure(
+            frame, probabilities, x_range, y_range
+        )
+        hist_plot, _ = build_monthly_histogram_figure(
+            frame["histogram"], hist_max
+        )
+        map_path = map_dir / f"{file_stub}_map.png"
+        monthly_path = monthly_dir / f"{file_stub}_monthly_sample.png"
+        try:
+            export_png(
+                map_plot,
+                filename=str(map_path),
+                scale_factor=ANIMATION_PNG_SCALE_FACTOR,
+            )
+            export_png(
+                hist_plot,
+                filename=str(monthly_path),
+                scale_factor=ANIMATION_PNG_SCALE_FACTOR,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                "PNG export failed. Ensure 'selenium' is installed and either "
+                "Chromium/chromedriver or Firefox/geckodriver is available on "
+                "PATH."
+            ) from exc
+        print(f"[INFO] Saved PNGs: {map_path} and {monthly_path}")
+
+    print(f"[INFO] Yearly PNG snapshots written to {output_dir}.")
+
+
+def save_interactive_pngs(bundle: InteractiveLayoutBundle, output_dir: Path) -> None:
+    """Save the interactive mode's initial map and sample-size plots."""
+    export_png = resolve_png_exporter()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    outputs = [
+        (bundle.map_plot, output_dir / "interactive_map.png"),
+        (bundle.monthly_plot, output_dir / "interactive_monthly_sample.png"),
+        (bundle.yearly_plot, output_dir / "interactive_yearly_sample.png"),
+        (bundle.hourly_plot, output_dir / "interactive_hourly_sample.png"),
+    ]
+    for plot_obj, output_path in outputs:
+        try:
+            export_png(
+                plot_obj,
+                filename=str(output_path),
+                scale_factor=ANIMATION_PNG_SCALE_FACTOR,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                "PNG export failed. Ensure 'selenium' is installed and either "
+                "Chromium/chromedriver or Firefox/geckodriver is available on "
+                "PATH."
+            ) from exc
+        print(f"[INFO] Saved PNG: {output_path}")
+
+    print(f"[INFO] Interactive PNG snapshots written to {output_dir}.")
+
+
+def plot_animated_map(
+    frames: list[dict[str, object]],
+    probabilities: Sequence[float],
+    x_range: Range1d,
+    y_range: Range1d,
+    output_html: Path,
+    species_slug: str,
+) -> None:
+    """Render an animated KDE map with a slider and monthly histogram."""
+    if not frames:
+        raise SystemExit("No animation frames to render.")
+
+    first_frame = frames[0]
+    use_band_fill = FILL_ISOCLINES and use_band_fill_mode()
+    render_order = list(range(len(probabilities) - 1, -1, -1))
+    hist_max = compute_animation_hist_max(frames)
+    plot, point_source, iso_sources, year_label = build_animation_map_figure(
+        first_frame, probabilities, x_range, y_range
+    )
+    frame_div = Div(text=first_frame["frame_label"])
+    bandwidth_div = Div(text=first_frame["bandwidth_text"])
+    hist_plot, hist_source = build_monthly_histogram_figure(
+        first_frame["histogram"], hist_max
     )
     slider = Slider(
         start=0, end=len(frames) - 1, value=0, step=1, title="Frame"
@@ -2854,6 +3305,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Launch a local Bokeh server for the static map with KDE controls."
         ),
     )
+    parser.add_argument(
+        "--savepng",
+        action="store_true",
+        help=(
+            "With --animate, save yearly PNG snapshots; with --interactive, "
+            "save the initial map, monthly sample size, yearly sample size, "
+            "and hourly sample size plots."
+        ),
+    )
+    parser.add_argument(
+        "--logit",
+        type=float,
+        help=(
+            "When used with --animate, keep only samples with logits greater "
+            "than or equal to this threshold."
+        ),
+    )
+    parser.add_argument(
+        "--minlogit",
+        type=float,
+        help=(
+            "When used with --interactive, set the initial lower bound of the "
+            "logit slider while keeping the slider's full detected range."
+        ),
+    )
     return parser
 
 
@@ -2886,7 +3362,9 @@ def run_static_map() -> None:
     )
 
 
-def run_interactive_map() -> None:
+def run_interactive_map(
+    *, save_png: bool = False, initial_min_logit: float | None = None
+) -> None:
     """Launch a Bokeh server with interactive KDE controls."""
     log_isocline_percentages(NUM_ISOCLINES)
     inference_df = prepare_inference_table(INFERENCE_CSV)
@@ -2933,13 +3411,14 @@ def run_interactive_map() -> None:
     x_eq, y_eq = equal_area.transform(lon, lat)
     points_eq = np.column_stack((x_eq, y_eq))
 
-    def modify_doc(doc) -> None:
-        layout, point_source, _ = build_static_interactive_layout(
+    if save_png:
+        export_bundle = build_static_interactive_layout(
             points_df,
             lon,
             lat,
             points_eq,
             logit_range=logit_range,
+            initial_min_logit=initial_min_logit,
             spectrogram_dir=spectrogram_dir,
             spectrogram_base_url=spectrogram_base,
             spectrogram_image_format=SPECTROGRAM_IMAGE_FORMAT,
@@ -2948,12 +3427,30 @@ def run_interactive_map() -> None:
             species_slug=species_slug,
             playlist_max_items=PLAYLIST_MAX_ITEMS,
         )
-        doc.add_root(layout)
+        save_interactive_pngs(export_bundle, INTERACTIVE_PNG_OUTPUT_DIR)
+
+    def modify_doc(doc) -> None:
+        bundle = build_static_interactive_layout(
+            points_df,
+            lon,
+            lat,
+            points_eq,
+            logit_range=logit_range,
+            initial_min_logit=initial_min_logit,
+            spectrogram_dir=spectrogram_dir,
+            spectrogram_base_url=spectrogram_base,
+            spectrogram_image_format=SPECTROGRAM_IMAGE_FORMAT,
+            inline_spectrograms=INLINE_SPECTROGRAMS,
+            audio_base_url=audio_base,
+            species_slug=species_slug,
+            playlist_max_items=PLAYLIST_MAX_ITEMS,
+        )
+        doc.add_root(bundle.layout)
         doc.title = build_map_title_text(species_slug)
         doc.js_on_event(
             DocumentReady,
             CustomJS(
-                args=dict(source=point_source),
+                args=dict(source=bundle.point_source),
                 code="""
                     if (!window._kde_playlist_listener_attached) {
                         window._kde_playlist_listener_attached = true;
@@ -2991,11 +3488,18 @@ def run_interactive_map() -> None:
     server.io_loop.start()
 
 
-def run_animated_map() -> None:
+def run_animated_map(
+    *, save_png: bool = False, min_logit: float | None = None
+) -> None:
     """Render an animated KDE map with month-by-month frames."""
     log_isocline_percentages(NUM_ISOCLINES)
     species_slug = detect_species_slug(INFERENCE_CSV)
     dated = prepare_base_dataframe()
+    dated = filter_min_logit(dated, min_logit)
+    if dated.empty:
+        raise SystemExit(
+            "No rows remain after applying the animation logit filter."
+        )
     dated = ensure_date_column(dated)
     valid_mask = dated["date_dt"].notna()
     if valid_mask.sum() == 0:
@@ -3045,16 +3549,52 @@ def run_animated_map() -> None:
         frames, probabilities, x_range, y_range, ANIMATION_OUTPUT_HTML, species_slug
     )
 
+    if save_png:
+        snapshot_windows = build_snapshot_windows(dated["date_dt"])
+        if not snapshot_windows:
+            print("[WARN] No yearly PNG snapshot windows could be built.")
+            return
+        print(
+            f"[INFO] Saving {len(snapshot_windows)} yearly PNG snapshots to "
+            f"{ANIMATION_PNG_OUTPUT_DIR}."
+        )
+        snapshot_frames = build_animation_frames(
+            dated,
+            snapshot_windows,
+            probabilities,
+            point_transformer,
+            equal_area,
+            contour_transformer,
+            species_slug,
+        )
+        save_animation_pngs(
+            snapshot_frames,
+            probabilities,
+            x_range,
+            y_range,
+            ANIMATION_PNG_OUTPUT_DIR,
+        )
+
 
 def main() -> None:
     """Parse CLI arguments and render the requested output."""
     parser = build_arg_parser()
     args = parser.parse_args()
 
+    if args.savepng and not (args.animate or args.interactive):
+        parser.error("--savepng requires --animate or --interactive.")
+    if args.logit is not None and not args.animate:
+        parser.error("--logit requires --animate.")
+    if args.minlogit is not None and not args.interactive:
+        parser.error("--minlogit requires --interactive.")
+
     if args.animate:
-        run_animated_map()
+        run_animated_map(save_png=args.savepng, min_logit=args.logit)
     elif args.interactive:
-        run_interactive_map()
+        run_interactive_map(
+            save_png=args.savepng,
+            initial_min_logit=args.minlogit,
+        )
     else:
         run_static_map()
 

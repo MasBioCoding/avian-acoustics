@@ -46,6 +46,10 @@ dependencies:
   - kdepy
   - pyproj
   - scikit-image
+  # Required for Bokeh `export_png`, used by `xc_scripts/kde_map_animate.py --animate --savepng`
+  - selenium
+  - firefox
+  - geckodriver
   - pip:
       - tensorflow-macos==2.15.0
       - tensorflow-metal==1.1.0
