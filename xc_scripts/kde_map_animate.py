@@ -72,12 +72,12 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 ANIMATION_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/statics/prunella_modularis/bursts"
+    "/Users/masjansma/Desktop/scriptie/results/animations/emberiza_calandra/song_noterminal"
 )
 INTERACTIVE_PNG_OUTPUT_DIR = ANIMATION_PNG_OUTPUT_DIR / "static"
 ANIMATION_PNG_SCALE_FACTOR = 1
@@ -94,7 +94,7 @@ DATE_FILTER_MODE = (
     "range"  # "all", "recent", "exclude_recent", or "range"
 )
 DATE_FILTER_YEARS = 3
-DATE_RANGE_START = "2013-12-30"  # Used when mode="range".
+DATE_RANGE_START = "2014-01-01"  # Used when mode="range".
 DATE_RANGE_END = "2026-01-01"  # Used when mode="range".
 # Examples: "2014", "2014-01", "2014-01-01"
 DATE_PARSE_FORMAT = "%m/%d/%Y"
@@ -102,7 +102,7 @@ DATE_PARSE_DAYFIRST = False
 DATE_PARSE_FALLBACK = True
 
 KDE_GRID_SIZE = 256
-BANDWIDTH_METHOD = "cv"  # "cv", "scott", "knn", or "manual" (after scaling)
+BANDWIDTH_METHOD = "scott"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
@@ -152,7 +152,7 @@ MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "72pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Prunella modularis"
+MAP_TITLE_TEXT = "Emberiza calandra"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
@@ -205,10 +205,10 @@ HISTOGRAM_Y_PADDING = 1.1
 
 # Monthly sample size
 MONTHLY_SAMPLE_TITLE_TEXT = "Monthly sample size"
-MONTHLY_SAMPLE_WIDTH = 2400
-MONTHLY_SAMPLE_HEIGHT = 500
-#MONTHLY_SAMPLE_WIDTH = 700
-#MONTHLY_SAMPLE_HEIGHT = 300
+#MONTHLY_SAMPLE_WIDTH = 2400
+#MONTHLY_SAMPLE_HEIGHT = 500
+MONTHLY_SAMPLE_WIDTH = 700
+MONTHLY_SAMPLE_HEIGHT = 300
 MONTHLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
 MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
 MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
@@ -760,6 +760,20 @@ def filter_top_logit_per_recordist(
     return combined
 
 
+def count_valid_recordists(df: pd.DataFrame) -> int | None:
+    """Return the number of non-empty recordists, if the column exists."""
+    if "recordist" not in df.columns:
+        return None
+    recordist = df["recordist"].astype(str).str.strip()
+    recordist_lower = recordist.str.lower()
+    has_recordist = (
+        recordist_lower.ne("")
+        & recordist_lower.ne("nan")
+        & recordist_lower.ne("none")
+    )
+    return int(recordist[has_recordist].nunique())
+
+
 def filter_min_logit(
     df: pd.DataFrame, min_logit: float | None, *, log: bool = True
 ) -> pd.DataFrame:
@@ -773,15 +787,28 @@ def filter_min_logit(
 
     filtered = df.copy()
     filtered["logits"] = pd.to_numeric(filtered["logits"], errors="coerce")
+    recordists_before = count_valid_recordists(filtered)
     finite = np.isfinite(filtered["logits"])
     mask = finite & (filtered["logits"] >= float(min_logit))
     result = filtered.loc[mask].copy()
+    recordists_after = count_valid_recordists(result)
 
     if log:
         dropped_invalid = int((~finite).sum())
+        detail_bits = [
+            f"min_logit={float(min_logit):.3f}",
+            f"invalid={dropped_invalid}",
+        ]
+        if recordists_before is not None and recordists_after is not None:
+            detail_bits.append(
+                f"recordists_kept={recordists_after}/{recordists_before}"
+            )
+            detail_bits.append(
+                f"recordists_filtered_out={recordists_before - recordists_after}"
+            )
         print(
             f"[INFO] Logit filter kept {len(result)} of {len(df)} rows "
-            f"(min_logit={float(min_logit):.3f}, invalid={dropped_invalid})."
+            f"({', '.join(detail_bits)})."
         )
     return result
 
@@ -3373,6 +3400,8 @@ def run_interactive_map(
     merged = merge_inference_metadata(inference_df, metadata_df)
     dated = apply_date_filter(merged)
     filtered = filter_top_logit_per_recordist(dated)
+    if initial_min_logit is not None:
+        filter_min_logit(filtered, initial_min_logit)
     points_df, lon, lat = prepare_points(filtered)
 
     if len(lon) == 0:
