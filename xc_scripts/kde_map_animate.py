@@ -8,7 +8,7 @@ Edit the paths and settings below, then run:
     python xc_scripts/kde_map_animate.py --animate --savepng --logit 0
     python xc_scripts/kde_map_animate.py --interactive
     python xc_scripts/kde_map_animate.py --interactive --savepng
-    python xc_scripts/kde_map_animate.py --interactive --minlogit 0 --savepng
+    python xc_scripts/kde_map_animate.py --interactive --minlogit -0.55 --savepng
 
 Interactive mode starts a local Bokeh server with a KDE scale input and
 "Recalculate KDE" button for the static map.
@@ -72,12 +72,12 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_citrinella/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_citrinella/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 ANIMATION_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/animations/emberiza_calandra/song_noterminal"
+    "/Users/masjansma/Desktop/scriptie/results/statics/emberiza_citrinella/songs_BE"
 )
 INTERACTIVE_PNG_OUTPUT_DIR = ANIMATION_PNG_OUTPUT_DIR / "static"
 ANIMATION_PNG_SCALE_FACTOR = 1
@@ -152,7 +152,7 @@ MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "72pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Emberiza calandra"
+MAP_TITLE_TEXT = "Emberiza citrinella"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
@@ -2178,8 +2178,48 @@ def build_static_interactive_layout(
     x_merc, y_merc = project_points(lon, lat, point_transformer)
 
     probabilities = get_isocline_probabilities(NUM_ISOCLINES).tolist()
+    base_data = build_point_source_data(points_df, lon, lat, x_merc, y_merc)
+    base_arrays = {key: np.asarray(values) for key, values in base_data.items()}
+    point_logits = pd.to_numeric(points_df.get("logits"), errors="coerce").to_numpy()
+    has_point_logits = np.isfinite(point_logits).any()
+    slider_bounds = logit_range or extract_logit_range(point_logits)
+    slider_enabled = has_point_logits and slider_bounds is not None
+
+    if slider_bounds is None:
+        slider_min, slider_max = 0.0, 1.0
+    else:
+        slider_min, slider_max = slider_bounds
+        if not np.isfinite(slider_min) or not np.isfinite(slider_max):
+            slider_min, slider_max = 0.0, 1.0
+            slider_enabled = False
+        elif slider_max <= slider_min:
+            slider_max = slider_min + 1.0
+
+    logit_slider = RangeSlider(
+        title="Logit range",
+        start=slider_min,
+        end=slider_max,
+        value=resolve_initial_logit_range(
+            slider_min, slider_max, initial_min_logit
+        ),
+        step=infer_logit_step(slider_min, slider_max),
+        width=320,
+        disabled=not slider_enabled,
+    )
+
+    def build_logit_mask() -> np.ndarray:
+        if not slider_enabled:
+            return np.ones(len(point_logits), dtype=bool)
+        min_val, max_val = logit_slider.value
+        finite = np.isfinite(point_logits)
+        return finite & (point_logits >= min_val) & (point_logits <= max_val)
+
+    initial_mask = build_logit_mask()
+    initial_points_eq = points_eq[initial_mask]
+    # Keep the first rendered KDE in sync with the slider's initial range so
+    # the initial browser view and any exported PNGs match the visible points.
     source_data, projected_isopleths, bandwidth = compute_isopleth_sources(
-        points_eq,
+        initial_points_eq,
         probabilities,
         contour_transformer,
         knn_scale_override=BANDWIDTH_KNN_SCALE,
@@ -2261,35 +2301,6 @@ def build_static_interactive_layout(
 
     if legend_added:
         style_map_legend(plot)
-
-    base_data = build_point_source_data(points_df, lon, lat, x_merc, y_merc)
-    base_arrays = {key: np.asarray(values) for key, values in base_data.items()}
-    point_logits = pd.to_numeric(points_df.get("logits"), errors="coerce").to_numpy()
-    has_point_logits = np.isfinite(point_logits).any()
-    slider_bounds = logit_range or extract_logit_range(point_logits)
-    slider_enabled = has_point_logits and slider_bounds is not None
-
-    if slider_bounds is None:
-        slider_min, slider_max = 0.0, 1.0
-    else:
-        slider_min, slider_max = slider_bounds
-        if not np.isfinite(slider_min) or not np.isfinite(slider_max):
-            slider_min, slider_max = 0.0, 1.0
-            slider_enabled = False
-        elif slider_max <= slider_min:
-            slider_max = slider_min + 1.0
-
-    logit_slider = RangeSlider(
-        title="Logit range",
-        start=slider_min,
-        end=slider_max,
-        value=resolve_initial_logit_range(
-            slider_min, slider_max, initial_min_logit
-        ),
-        step=infer_logit_step(slider_min, slider_max),
-        width=320,
-        disabled=not slider_enabled,
-    )
 
     if "date_dt" in points_df.columns:
         date_series = points_df["date_dt"]
@@ -2375,15 +2386,6 @@ def build_static_interactive_layout(
         width=180,
     )
     recalc_button = Button(label="Recalculate KDE", button_type="primary")
-
-    def build_logit_mask() -> np.ndarray:
-        if not slider_enabled:
-            return np.ones(len(point_logits), dtype=bool)
-        min_val, max_val = logit_slider.value
-        finite = np.isfinite(point_logits)
-        return finite & (point_logits >= min_val) & (point_logits <= max_val)
-
-    initial_mask = build_logit_mask()
     hist_plot, hist_source = build_monthly_histogram_figure(
         build_histogram_data(initial_mask), hist_max
     )
@@ -3401,7 +3403,9 @@ def run_interactive_map(
     dated = apply_date_filter(merged)
     filtered = filter_top_logit_per_recordist(dated)
     if initial_min_logit is not None:
-        filter_min_logit(filtered, initial_min_logit)
+        # Log the initial slider effect without removing points from the full
+        # interactive dataset; the layout applies the initial mask itself.
+        _ = filter_min_logit(filtered, initial_min_logit)
     points_df, lon, lat = prepare_points(filtered)
 
     if len(lon) == 0:
