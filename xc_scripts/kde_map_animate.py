@@ -5,7 +5,7 @@ Edit the paths and settings below, then run:
     python xc_scripts/kde_map_animate.py
     python xc_scripts/kde_map_animate.py --animate
     python xc_scripts/kde_map_animate.py --animate --logit -0
-    python xc_scripts/kde_map_animate.py --animate --savepng --logit 0
+    python xc_scripts/kde_map_animate.py --animate --savepng --logit -0.55
     python xc_scripts/kde_map_animate.py --interactive
     python xc_scripts/kde_map_animate.py --interactive --savepng
     python xc_scripts/kde_map_animate.py --interactive --minlogit -0.55 --savepng
@@ -72,12 +72,12 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_citrinella/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_citrinella/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 ANIMATION_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/statics/emberiza_citrinella/songs_BE"
+    "/Users/masjansma/Desktop/scriptie/results/animations/emberiza_citrinella/songs"
 )
 INTERACTIVE_PNG_OUTPUT_DIR = ANIMATION_PNG_OUTPUT_DIR / "static"
 ANIMATION_PNG_SCALE_FACTOR = 1
