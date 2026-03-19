@@ -4,11 +4,11 @@ Visualize an ingroup's geographic distribution with KDE isoclines on a map.
 Edit the paths and settings below, then run:
     python xc_scripts/kde_map_animate.py
     python xc_scripts/kde_map_animate.py --animate
-    python xc_scripts/kde_map_animate.py --animate --logit -0
-    python xc_scripts/kde_map_animate.py --animate --savepng --logit -0.55
+    python xc_scripts/kde_map_animate.py --animate --logit 0
+    python xc_scripts/kde_map_animate.py --animate --savepng --logit 0
     python xc_scripts/kde_map_animate.py --interactive
     python xc_scripts/kde_map_animate.py --interactive --savepng
-    python xc_scripts/kde_map_animate.py --interactive --minlogit -0.55 --savepng
+    python xc_scripts/kde_map_animate.py --interactive --minlogit 0 --savepng
 
 Interactive mode starts a local Bokeh server with a KDE scale input and
 "Recalculate KDE" button for the static map.
@@ -72,12 +72,12 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 ANIMATION_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/animations/emberiza_citrinella/songs"
+    "/Users/masjansma/Desktop/scriptie/results/animations/chloris_chloris/buzz_up"
 )
 INTERACTIVE_PNG_OUTPUT_DIR = ANIMATION_PNG_OUTPUT_DIR / "static"
 ANIMATION_PNG_SCALE_FACTOR = 1
@@ -102,11 +102,11 @@ DATE_PARSE_DAYFIRST = False
 DATE_PARSE_FALLBACK = True
 
 KDE_GRID_SIZE = 256
-BANDWIDTH_METHOD = "scott"  # "cv", "scott", "knn", or "manual" (after scaling)
+BANDWIDTH_METHOD = "knn"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
-BANDWIDTH_KNN_SCALE = 0.8  # Multiplier for the "knn" bandwidth.
+BANDWIDTH_KNN_SCALE = 0.4  # Multiplier for the "knn" bandwidth.
 BANDWIDTH_GRID_SIZE = 20
 BANDWIDTH_CV_FOLDS = 5
 BANDWIDTH_SEARCH_LOG_MIN = -1.0
@@ -152,7 +152,7 @@ MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "72pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Emberiza citrinella"
+MAP_TITLE_TEXT = "Chloris chloris"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
@@ -173,7 +173,7 @@ MAP_TILE_FALLBACK_PROVIDER = "CartoDB.PositronNoLabels"
 MAP_TILE_FALLBACK_RETINA = True
 MAP_TILE_FALLBACK_ALPHA = 1.0
 MAX_ABS_LAT = 85.0
-MIN_POINTS_FOR_KDE = 5
+MIN_POINTS_FOR_KDE = 7
 YEAR_LABEL_LAT = 70.0
 
 MONTH_LABELS = [
