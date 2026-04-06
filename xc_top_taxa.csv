@@ -1,0 +1,31 @@
+clade,used_query,rank,common_name,scientific_name,count
+bats,grp:bats,1,Common Pipistrelle,Pipistrellus pipistrellus,980
+bats,grp:bats,2,European Free-tailed Bat,Tadarida teniotis,967
+bats,grp:bats,3,Savi's Pipistrelle,Hypsugo savii,600
+bats,grp:bats,4,Kuhl's Pipistrelle,Pipistrellus kuhlii,599
+bats,grp:bats,5,Common Noctule,Nyctalus noctula,542
+bats,grp:bats,6,Identity unknown,Mystery mystery,497
+bats,grp:bats,7,Nathusius's Pipistrelle,Pipistrellus nathusii,487
+bats,grp:bats,8,Leisler's Noctule,Nyctalus leisleri,245
+bats,grp:bats,9,Lesser Horseshoe Bat,Rhinolophus hipposideros,188
+bats,grp:bats,10,Schreibers's Long-fingered Bat,Miniopterus schreibersii,182
+frogs,grp:frogs,1,Common Frog,Rana temporaria,203
+frogs,grp:frogs,2,Marsh Frog,Pelophylax ridibundus,181
+frogs,grp:frogs,3,Edible Frog,Pelophylax 'esculentus',172
+frogs,grp:frogs,4,Identity unknown,Mystery mystery,165
+frogs,grp:frogs,5,Iberian Green Frog,Pelophylax perezi,135
+frogs,grp:frogs,6,Pool Frog,Pelophylax lessonae,133
+frogs,grp:frogs,7,Brilliant-thighed Poison Frog,Allobates femoralis,107
+frogs,grp:frogs,8,Mediterranean Tree Frog,Hyla meridionalis,95
+frogs,grp:frogs,9,Common Tree Frog,Hyla arborea,89
+frogs,grp:frogs,10,Natterjack Toad,Epidalea calamita,88
+grasshoppers,grp:grasshoppers,1,Dark Bush-cricket,Pholidoptera griseoaptera,1416
+grasshoppers,grp:grasshoppers,2,Greek Predatory Bush-cricket,Saga hellenica,702
+grasshoppers,grp:grasshoppers,3,Schmidt's Marbled Bush-cricket,Eupholidoptera schmidti,631
+grasshoppers,grp:grasshoppers,4,Limnos Bush-cricket,Isophya lemnotica,550
+grasshoppers,grp:grasshoppers,5,UNKNOWN_COMMON_NAME,Chorthippus biguttulus,446
+grasshoppers,grp:grasshoppers,6,La Greca's Slender Bush-cricket,Tessellana lagrecai,437
+grasshoppers,grp:grasshoppers,7,Sickle-bearing Bush-cricket,Phaneroptera falcata,423
+grasshoppers,grp:grasshoppers,8,UNKNOWN_COMMON_NAME,Platycleis albopunctata,368
+grasshoppers,grp:grasshoppers,9,Speckled Bush-cricket,Leptophyes punctatissima,350
+grasshoppers,grp:grasshoppers,10,Field Cricket,Gryllus campestris,337

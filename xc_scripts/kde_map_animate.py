@@ -72,15 +72,18 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/chloris_chloris/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 ANIMATION_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/animations/chloris_chloris/buzz_up"
+    "/Users/masjansma/Desktop/scriptie/results/animations/phylloscopus_collybita/song_down"
 )
-INTERACTIVE_PNG_OUTPUT_DIR = ANIMATION_PNG_OUTPUT_DIR / "static"
+INTERACTIVE_PNG_OUTPUT_DIR = Path(
+    "/Users/masjansma/Desktop/scriptie/results/statics/phylloscopus_collybita/song_down"
+)
 ANIMATION_PNG_SCALE_FACTOR = 1
+MAP_TITLE_TEXT = "Phylloscopus collybita"
 
 FILTER_ONE_PER_RECORDIST = True
 
@@ -89,6 +92,14 @@ FILL_ISOCLINES = True
 HDR_MIN_PROB = 0.1
 HDR_MAX_PROB = 0.7
 ISOCLINE_PROB_ROUND_STEP = 0.05 # Set <= 0 to disable interior rounding.
+VISIBLE_ISOCLINE_FILL_BANDS = [1,3,5] # Sequence[int] | None = None
+# 1-based outer-to-inner band order, matching the legend/default render order.
+# None shows all fills by default. Example: [1, 3, 5]
+CUSTOM_ISOCLINE_PERCENTAGES = [10, 20, 35, 45, 60, 70]
+# CUSTOM_ISOCLINE_PERCENTAGES: Sequence[float | str] | None = None
+# Optional explicit HDR percentages, e.g. [10, 22, 34, 46, 58, 70].
+# When set, this overrides NUM_ISOCLINES, HDR_MIN_PROB, HDR_MAX_PROB,
+# and ISOCLINE_PROB_ROUND_STEP.
 
 DATE_FILTER_MODE = (
     "range"  # "all", "recent", "exclude_recent", or "range"
@@ -102,7 +113,7 @@ DATE_PARSE_DAYFIRST = False
 DATE_PARSE_FALLBACK = True
 
 KDE_GRID_SIZE = 256
-BANDWIDTH_METHOD = "knn"  # "cv", "scott", "knn", or "manual" (after scaling)
+BANDWIDTH_METHOD = "scott"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
@@ -152,7 +163,7 @@ MAP_BASE_RETINA = False
 MAP_BASE_ALPHA = 1.0
 MAP_TITLE_FONT_SIZE = "72pt"
 MAP_TITLE_FONT_STYLE = "italic"
-MAP_TITLE_TEXT = "Chloris chloris"
+# MAP_TITLE_TEXT = "Emberiza citrinella"
 MAP_AXIS_MAJOR_LABEL_FONT_SIZE = "28pt"
 MAP_AXIS_LABEL_FONT_SIZE = "32pt"
 MAP_LEGEND_LOCATION = "top_right"
@@ -280,6 +291,7 @@ PLAYLIST_MAX_ITEMS: int | None = None  # Set to cap playlist size.
 class Isopleth:
     """Container for a single KDE isopleth."""
 
+    probability_index: int
     probability: float
     level: float
     paths: list[np.ndarray]
@@ -1030,14 +1042,14 @@ def build_isopleths(
     grid: np.ndarray, values: np.ndarray, num_levels: int
 ) -> list[Isopleth]:
     """Build isopleths for the requested number of levels."""
-    if num_levels <= 0:
-        return []
     x_axis, y_axis, reshaped_values = reshape_kde_arrays(grid, values)
     probabilities = get_isocline_probabilities(num_levels)
+    if probabilities.size == 0:
+        return []
     levels = compute_hdr_levels(reshaped_values, probabilities)
 
     isopleths: list[Isopleth] = []
-    for prob in probabilities:
+    for probability_index, prob in enumerate(probabilities):
         level = levels.get(prob)
         if level is None:
             continue
@@ -1045,7 +1057,12 @@ def build_isopleths(
         if not paths:
             continue
         isopleths.append(
-            Isopleth(probability=prob, level=level, paths=close_paths(paths))
+            Isopleth(
+                probability_index=probability_index,
+                probability=prob,
+                level=level,
+                paths=close_paths(paths),
+            )
         )
     return isopleths
 
@@ -1062,6 +1079,7 @@ def project_isopleths(
             projected_paths.append(np.column_stack((x_vals, y_vals)))
         projected.append(
             Isopleth(
+                probability_index=iso.probability_index,
                 probability=iso.probability,
                 level=iso.level,
                 paths=projected_paths,
@@ -1227,6 +1245,39 @@ def use_band_fill_mode() -> bool:
         return False
     print("[WARN] ISOCLINE_FILL_MODE must be 'bands' or 'stacked'; using 'bands'.")
     return True
+
+
+def resolve_visible_isocline_fill_positions(num_levels: int) -> set[int]:
+    """Return zero-based outer-to-inner fill positions that start visible."""
+    if num_levels <= 0:
+        return set()
+
+    configured = VISIBLE_ISOCLINE_FILL_BANDS
+    if configured is None:
+        return set(range(num_levels))
+
+    visible_positions: set[int] = set()
+    invalid_values: list[object] = []
+    for raw_value in configured:
+        try:
+            if isinstance(raw_value, bool):
+                raise TypeError
+            band_number = int(raw_value)
+        except (TypeError, ValueError):
+            invalid_values.append(raw_value)
+            continue
+        if 1 <= band_number <= num_levels:
+            visible_positions.add(band_number - 1)
+        else:
+            invalid_values.append(raw_value)
+
+    if invalid_values:
+        invalid_text = ", ".join(repr(value) for value in invalid_values)
+        raise SystemExit(
+            "VISIBLE_ISOCLINE_FILL_BANDS must contain 1-based band numbers "
+            f"between 1 and {num_levels}. Invalid values: {invalid_text}"
+        )
+    return visible_positions
 
 
 def polygon_area_xy(path: np.ndarray) -> float:
@@ -1440,8 +1491,62 @@ def build_band_sources_from_level_sources(
     return build_band_sources_from_ordered_paths(ordered_paths)
 
 
+def resolve_custom_isocline_probabilities() -> np.ndarray | None:
+    """Return explicitly configured HDR probabilities, if any."""
+    configured = CUSTOM_ISOCLINE_PERCENTAGES
+    if configured is None:
+        return None
+    if not configured:
+        return np.array([], dtype=float)
+
+    percentages: list[float] = []
+    invalid_values: list[object] = []
+    for raw_value in configured:
+        try:
+            if isinstance(raw_value, bool):
+                raise TypeError
+            if isinstance(raw_value, str):
+                text = raw_value.strip()
+                if text.endswith("%"):
+                    text = text[:-1].strip()
+                percentage = float(text)
+            else:
+                percentage = float(raw_value)
+        except (TypeError, ValueError):
+            invalid_values.append(raw_value)
+            continue
+        if not np.isfinite(percentage):
+            invalid_values.append(raw_value)
+            continue
+        percentages.append(percentage)
+
+    if invalid_values:
+        invalid_text = ", ".join(repr(value) for value in invalid_values)
+        raise SystemExit(
+            "CUSTOM_ISOCLINE_PERCENTAGES must contain numeric percentage values "
+            f"such as [10, 22, 34]. Invalid values: {invalid_text}"
+        )
+
+    probabilities = np.asarray(percentages, dtype=float) / 100.0
+    if probabilities.size == 0:
+        return probabilities
+    if np.any(probabilities <= 0) or np.any(probabilities > 1):
+        raise SystemExit(
+            "CUSTOM_ISOCLINE_PERCENTAGES must be > 0 and <= 100."
+        )
+    if np.any(np.diff(probabilities) <= 0):
+        raise SystemExit(
+            "CUSTOM_ISOCLINE_PERCENTAGES must be strictly increasing, for example "
+            "[10, 22, 34, 46, 58, 70]."
+        )
+    return probabilities
+
+
 def get_isocline_probabilities(num_levels: int) -> np.ndarray:
     """Return the HDR probabilities used to generate isoclines."""
+    custom_probabilities = resolve_custom_isocline_probabilities()
+    if custom_probabilities is not None:
+        return custom_probabilities
     if num_levels <= 0:
         return np.array([], dtype=float)
     probabilities = np.linspace(HDR_MIN_PROB, HDR_MAX_PROB, num_levels, dtype=float)
@@ -2058,8 +2163,12 @@ def plot_map(
     stroke_palette = build_isocline_stroke_palette(
         len(projected_isopleths), fill_palette=palette
     )
+    configured_probabilities = get_isocline_probabilities(NUM_ISOCLINES)
     ordered_isopleths = sorted(projected_isopleths, key=lambda iso: iso.level)
     legend_added = False
+    visible_fill_positions = resolve_visible_isocline_fill_positions(
+        len(configured_probabilities)
+    )
 
     if FILL_ISOCLINES:
         if use_band_fill_mode():
@@ -2069,7 +2178,7 @@ def plot_map(
                 ordered_isopleths, band_sources, palette, stroke_palette
             ):
                 if band_source["xs"]:
-                    plot.multi_polygons(
+                    renderer = plot.multi_polygons(
                         xs=band_source["xs"],
                         ys=band_source["ys"],
                         fill_color=fill_color,
@@ -2079,6 +2188,10 @@ def plot_map(
                         line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
                         legend_label=f"{iso.probability:.0%} isocline",
                     )
+                    visible_position = (
+                        len(configured_probabilities) - iso.probability_index - 1
+                    )
+                    renderer.visible = visible_position in visible_fill_positions
                     legend_added = True
         else:
             for iso, fill_color, stroke_color in zip(
@@ -2087,7 +2200,7 @@ def plot_map(
                 xs_list = [path[:, 0].tolist() for path in iso.paths]
                 ys_list = [path[:, 1].tolist() for path in iso.paths]
                 if xs_list:
-                    plot.patches(
+                    renderer = plot.patches(
                         xs_list,
                         ys_list,
                         fill_color=fill_color,
@@ -2097,6 +2210,10 @@ def plot_map(
                         line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
                         legend_label=f"{iso.probability:.0%} isocline",
                     )
+                    visible_position = (
+                        len(configured_probabilities) - iso.probability_index - 1
+                    )
+                    renderer.visible = visible_position in visible_fill_positions
                     legend_added = True
     else:
         for iso, stroke_color in zip(ordered_isopleths, stroke_palette):
@@ -2247,6 +2364,9 @@ def build_static_interactive_layout(
     )
     use_band_fill = FILL_ISOCLINES and use_band_fill_mode()
     render_order = list(range(len(probabilities) - 1, -1, -1))
+    visible_fill_positions = resolve_visible_isocline_fill_positions(
+        len(probabilities)
+    )
     band_source_data = (
         build_band_sources_from_level_sources(source_data, render_order)
         if use_band_fill
@@ -2262,7 +2382,7 @@ def build_static_interactive_layout(
         iso_sources.append(source)
         if FILL_ISOCLINES:
             if use_band_fill:
-                plot.multi_polygons(
+                renderer = plot.multi_polygons(
                     xs="xs",
                     ys="ys",
                     source=source,
@@ -2273,9 +2393,10 @@ def build_static_interactive_layout(
                     line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
                     legend_label=f"{probabilities[source_idx]:.0%} isocline",
                 )
+                renderer.visible = draw_idx in visible_fill_positions
                 legend_added = True
             else:
-                plot.patches(
+                renderer = plot.patches(
                     "xs",
                     "ys",
                     source=source,
@@ -2286,6 +2407,7 @@ def build_static_interactive_layout(
                     line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
                     legend_label=f"{probabilities[source_idx]:.0%} isocline",
                 )
+                renderer.visible = draw_idx in visible_fill_positions
                 legend_added = True
         else:
             plot.multi_line(
@@ -2861,6 +2983,9 @@ def build_animation_map_figure(
     )
     use_band_fill = FILL_ISOCLINES and use_band_fill_mode()
     render_order = list(range(len(probabilities) - 1, -1, -1))
+    visible_fill_positions = resolve_visible_isocline_fill_positions(
+        len(probabilities)
+    )
 
     plot = figure(
         title=frame["title"],
@@ -2910,7 +3035,7 @@ def build_animation_map_figure(
         iso_sources.append(source)
         if FILL_ISOCLINES:
             if use_band_fill:
-                plot.multi_polygons(
+                renderer = plot.multi_polygons(
                     xs="xs",
                     ys="ys",
                     source=source,
@@ -2921,9 +3046,10 @@ def build_animation_map_figure(
                     line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
                     legend_label=f"{prob:.0%} isocline",
                 )
+                renderer.visible = draw_idx in visible_fill_positions
                 legend_added = True
             else:
-                plot.patches(
+                renderer = plot.patches(
                     "xs",
                     "ys",
                     source=source,
@@ -2934,6 +3060,7 @@ def build_animation_map_figure(
                     line_width=max(0.0, ISOCLINE_STROKE_WIDTH),
                     legend_label=f"{prob:.0%} isocline",
                 )
+                renderer.visible = draw_idx in visible_fill_positions
                 legend_added = True
         else:
             plot.multi_line(
