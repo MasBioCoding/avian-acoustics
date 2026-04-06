@@ -72,18 +72,21 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/metadata.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
+# May point to a single inference.csv or to a directory whose immediate
+# subfolders each contain their own inference.csv.
+# INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/emberiza_citrinella")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 ANIMATION_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/animations/phylloscopus_collybita/song_down"
+    "/Users/masjansma/Desktop/scriptie/results/animations/emberiza_calandra/song_down"
 )
 INTERACTIVE_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/statics/phylloscopus_collybita/song_down"
+    "/Users/masjansma/Desktop/scriptie/results/statics/emberiza_calandra/song_down"
 )
 ANIMATION_PNG_SCALE_FACTOR = 1
-MAP_TITLE_TEXT = "Phylloscopus collybita"
+MAP_TITLE_TEXT = "Emberiza citrinella"
 
 FILTER_ONE_PER_RECORDIST = True
 
@@ -113,7 +116,7 @@ DATE_PARSE_DAYFIRST = False
 DATE_PARSE_FALLBACK = True
 
 KDE_GRID_SIZE = 256
-BANDWIDTH_METHOD = "scott"  # "cv", "scott", "knn", or "manual" (after scaling)
+BANDWIDTH_METHOD = "cv"  # "cv", "scott", "knn", or "manual" (after scaling)
 BANDWIDTH_MANUAL = None  # Example: 0.2
 BANDWIDTH_KNN_K = 5  # Kth neighbor distance used for "knn" bandwidth.
 BANDWIDTH_KNN_QUANTILE = 0.5  # Quantile of kth distances (0-1).
@@ -216,10 +219,10 @@ HISTOGRAM_Y_PADDING = 1.1
 
 # Monthly sample size
 MONTHLY_SAMPLE_TITLE_TEXT = "Monthly sample size"
-#MONTHLY_SAMPLE_WIDTH = 2400
-#MONTHLY_SAMPLE_HEIGHT = 500
-MONTHLY_SAMPLE_WIDTH = 700
-MONTHLY_SAMPLE_HEIGHT = 300
+ANIMATION_MONTHLY_SAMPLE_WIDTH = 700
+ANIMATION_MONTHLY_SAMPLE_HEIGHT = 300
+INTERACTIVE_MONTHLY_SAMPLE_WIDTH = 700
+INTERACTIVE_MONTHLY_SAMPLE_HEIGHT = 300
 MONTHLY_SAMPLE_TITLE_FONT_SIZE = "24pt"
 MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE = "20pt"
 MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE = "16pt"
@@ -321,6 +324,18 @@ class InteractiveLayoutBundle:
     hourly_plot: Any
 
 
+@dataclass(frozen=True)
+class InferenceRun:
+    """Resolved inference input plus the output paths for a single run."""
+
+    inference_csv: Path
+    output_html: Path
+    animation_output_html: Path
+    animation_png_output_dir: Path
+    interactive_png_output_dir: Path
+    label: str | None = None
+
+
 _STATIC_HTTP_SERVERS: dict[str, dict[str, Any]] = {}
 _LAND_PATCH_CACHE: tuple[list[list[float]], list[list[float]]] | None = None
 _LAND_PATCH_WARNING_SHOWN = False
@@ -328,9 +343,75 @@ _LAND_PATCH_WARNING_SHOWN = False
 
 def detect_species_slug(path: Path) -> str:
     """Infer the species slug from a CSV path."""
+    parts = path.parts
+    for idx, part in enumerate(parts):
+        if part == "embeddings" and idx + 1 < len(parts):
+            return parts[idx + 1]
     if path and path.parent.name:
         return path.parent.name
     return "unknown_species"
+
+
+def build_labelled_output_path(path: Path, label: str | None) -> Path:
+    """Add a label subdirectory for batch output paths."""
+    if not label:
+        return path
+    return path.parent / label / path.name
+
+
+def build_labelled_output_dir(path: Path, label: str | None) -> Path:
+    """Build a batch output directory rooted at the configured parent."""
+    if not label:
+        return path
+    return path.parent / label
+
+
+def resolve_inference_runs(source: Path) -> tuple[list[InferenceRun], bool]:
+    """Resolve a single inference.csv or a directory of labelled subfolders."""
+    if source.is_file():
+        return [
+            InferenceRun(
+                inference_csv=source,
+                output_html=OUTPUT_HTML,
+                animation_output_html=ANIMATION_OUTPUT_HTML,
+                animation_png_output_dir=ANIMATION_PNG_OUTPUT_DIR,
+                interactive_png_output_dir=INTERACTIVE_PNG_OUTPUT_DIR,
+            )
+        ], False
+
+    if source.is_dir():
+        runs: list[InferenceRun] = []
+        for child in sorted(source.iterdir()):
+            if not child.is_dir():
+                continue
+            candidate = child / "inference.csv"
+            if not candidate.is_file():
+                continue
+            label = child.name
+            runs.append(
+                InferenceRun(
+                    inference_csv=candidate,
+                    output_html=build_labelled_output_path(OUTPUT_HTML, label),
+                    animation_output_html=build_labelled_output_path(
+                        ANIMATION_OUTPUT_HTML, label
+                    ),
+                    animation_png_output_dir=build_labelled_output_dir(
+                        ANIMATION_PNG_OUTPUT_DIR, label
+                    ),
+                    interactive_png_output_dir=build_labelled_output_dir(
+                        INTERACTIVE_PNG_OUTPUT_DIR, label
+                    ),
+                    label=label,
+                )
+            )
+        if runs:
+            return runs, True
+        raise SystemExit(
+            "Inference directory mode expects immediate labelled subfolders "
+            "containing inference.csv files."
+        )
+
+    raise SystemExit(f"Inference path does not exist: {source}")
 
 
 def format_species_name(species_slug: str) -> str:
@@ -2258,6 +2339,7 @@ def plot_map(
         style_map_legend(plot)
 
     output_path = output_html or OUTPUT_HTML
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_file(output_path, title=plot_title)
     show(plot)
 
@@ -2509,7 +2591,10 @@ def build_static_interactive_layout(
     )
     recalc_button = Button(label="Recalculate KDE", button_type="primary")
     hist_plot, hist_source = build_monthly_histogram_figure(
-        build_histogram_data(initial_mask), hist_max
+        build_histogram_data(initial_mask),
+        hist_max,
+        width=INTERACTIVE_MONTHLY_SAMPLE_WIDTH,
+        height=INTERACTIVE_MONTHLY_SAMPLE_HEIGHT,
     )
 
     hour_plot, hour_source = build_hourly_histogram_figure(
@@ -2669,9 +2754,9 @@ def build_static_interactive_layout(
     )
 
 
-def prepare_base_dataframe() -> pd.DataFrame:
+def prepare_base_dataframe(inference_csv: Path) -> pd.DataFrame:
     """Load data, merge inference/metadata, and apply the date filter."""
-    inference_df = prepare_inference_table(INFERENCE_CSV)
+    inference_df = prepare_inference_table(inference_csv)
     metadata_df = prepare_metadata_table(METADATA_CSV)
     merged = merge_inference_metadata(inference_df, metadata_df)
     return apply_date_filter(merged)
@@ -3111,7 +3196,11 @@ def build_animation_map_figure(
 
 
 def build_monthly_histogram_figure(
-    histogram: dict[str, list[object]], hist_max: int
+    histogram: dict[str, list[object]],
+    hist_max: int,
+    *,
+    width: int,
+    height: int,
 ) -> tuple[Any, ColumnDataSource]:
     """Build the monthly sample-size figure for a single frame."""
     hist_source = ColumnDataSource(histogram)
@@ -3119,8 +3208,8 @@ def build_monthly_histogram_figure(
         title=MONTHLY_SAMPLE_TITLE_TEXT,
         x_range=MONTH_LABELS,
         y_range=(0, hist_max * HISTOGRAM_Y_PADDING),
-        width=MONTHLY_SAMPLE_WIDTH,
-        height=MONTHLY_SAMPLE_HEIGHT,
+        width=width,
+        height=height,
         tools="",
         toolbar_location=None,
     )
@@ -3279,7 +3368,10 @@ def save_animation_pngs(
             frame, probabilities, x_range, y_range
         )
         hist_plot, _ = build_monthly_histogram_figure(
-            frame["histogram"], hist_max
+            frame["histogram"],
+            hist_max,
+            width=ANIMATION_MONTHLY_SAMPLE_WIDTH,
+            height=ANIMATION_MONTHLY_SAMPLE_HEIGHT,
         )
         map_path = map_dir / f"{file_stub}_map.png"
         monthly_path = monthly_dir / f"{file_stub}_monthly_sample.png"
@@ -3356,7 +3448,10 @@ def plot_animated_map(
     frame_div = Div(text=first_frame["frame_label"])
     bandwidth_div = Div(text=first_frame["bandwidth_text"])
     hist_plot, hist_source = build_monthly_histogram_figure(
-        first_frame["histogram"], hist_max
+        first_frame["histogram"],
+        hist_max,
+        width=ANIMATION_MONTHLY_SAMPLE_WIDTH,
+        height=ANIMATION_MONTHLY_SAMPLE_HEIGHT,
     )
     slider = Slider(
         start=0, end=len(frames) - 1, value=0, step=1, title="Frame"
@@ -3432,6 +3527,7 @@ def plot_animated_map(
         row(play_button, slider),
         row(frame_div, bandwidth_div),
     )
+    output_html.parent.mkdir(parents=True, exist_ok=True)
     output_file(output_html, title=f"{build_map_title_text(species_slug)} animation")
     show(layout)
 
@@ -3471,6 +3567,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--inference-path",
+        type=Path,
+        help=(
+            "Path to a single inference.csv, or to a directory whose immediate "
+            "labelled subfolders each contain an inference.csv."
+        ),
+    )
+    parser.add_argument(
         "--logit",
         type=float,
         help=(
@@ -3489,11 +3593,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_static_map() -> None:
+def run_static_map(run: InferenceRun) -> None:
     """Render a static KDE map."""
     log_isocline_percentages(NUM_ISOCLINES)
-    species_slug = detect_species_slug(INFERENCE_CSV)
-    dated = prepare_base_dataframe()
+    species_slug = detect_species_slug(run.inference_csv)
+    dated = prepare_base_dataframe(run.inference_csv)
     filtered = filter_top_logit_per_recordist(dated)
     points_df, lon, lat = prepare_points(filtered)
 
@@ -3514,16 +3618,21 @@ def run_static_map() -> None:
         lat,
         isopleths,
         bandwidth,
+        output_html=run.output_html,
         species_slug=species_slug,
     )
 
 
 def run_interactive_map(
-    *, save_png: bool = False, initial_min_logit: float | None = None
+    run: InferenceRun,
+    *,
+    save_png: bool = False,
+    initial_min_logit: float | None = None,
+    launch_server: bool = True,
 ) -> None:
     """Launch a Bokeh server with interactive KDE controls."""
     log_isocline_percentages(NUM_ISOCLINES)
-    inference_df = prepare_inference_table(INFERENCE_CSV)
+    inference_df = prepare_inference_table(run.inference_csv)
     logit_range = extract_logit_range(inference_df["logits"])
     metadata_df = prepare_metadata_table(METADATA_CSV)
     merged = merge_inference_metadata(inference_df, metadata_df)
@@ -3538,8 +3647,8 @@ def run_interactive_map(
     if len(lon) == 0:
         raise SystemExit("No valid coordinates available for plotting.")
 
-    data_root = detect_root_path(INFERENCE_CSV)
-    species_slug = detect_species_slug(INFERENCE_CSV)
+    data_root = detect_root_path(run.inference_csv)
+    species_slug = detect_species_slug(run.inference_csv)
     spectrogram_dir = (
         SPECTROGRAMS_DIR
         if SPECTROGRAMS_DIR is not None
@@ -3587,7 +3696,10 @@ def run_interactive_map(
             species_slug=species_slug,
             playlist_max_items=PLAYLIST_MAX_ITEMS,
         )
-        save_interactive_pngs(export_bundle, INTERACTIVE_PNG_OUTPUT_DIR)
+        save_interactive_pngs(export_bundle, run.interactive_png_output_dir)
+
+    if not launch_server:
+        return
 
     def modify_doc(doc) -> None:
         bundle = build_static_interactive_layout(
@@ -3649,12 +3761,15 @@ def run_interactive_map(
 
 
 def run_animated_map(
-    *, save_png: bool = False, min_logit: float | None = None
+    run: InferenceRun,
+    *,
+    save_png: bool = False,
+    min_logit: float | None = None,
 ) -> None:
     """Render an animated KDE map with month-by-month frames."""
     log_isocline_percentages(NUM_ISOCLINES)
-    species_slug = detect_species_slug(INFERENCE_CSV)
-    dated = prepare_base_dataframe()
+    species_slug = detect_species_slug(run.inference_csv)
+    dated = prepare_base_dataframe(run.inference_csv)
     dated = filter_min_logit(dated, min_logit)
     if dated.empty:
         raise SystemExit(
@@ -3706,7 +3821,12 @@ def run_animated_map(
         species_slug,
     )
     plot_animated_map(
-        frames, probabilities, x_range, y_range, ANIMATION_OUTPUT_HTML, species_slug
+        frames,
+        probabilities,
+        x_range,
+        y_range,
+        run.animation_output_html,
+        species_slug,
     )
 
     if save_png:
@@ -3716,7 +3836,7 @@ def run_animated_map(
             return
         print(
             f"[INFO] Saving {len(snapshot_windows)} yearly PNG snapshots to "
-            f"{ANIMATION_PNG_OUTPUT_DIR}."
+            f"{run.animation_png_output_dir}."
         )
         snapshot_frames = build_animation_frames(
             dated,
@@ -3732,7 +3852,7 @@ def run_animated_map(
             probabilities,
             x_range,
             y_range,
-            ANIMATION_PNG_OUTPUT_DIR,
+            run.animation_png_output_dir,
         )
 
 
@@ -3747,16 +3867,33 @@ def main() -> None:
         parser.error("--logit requires --animate.")
     if args.minlogit is not None and not args.interactive:
         parser.error("--minlogit requires --interactive.")
-
-    if args.animate:
-        run_animated_map(save_png=args.savepng, min_logit=args.logit)
-    elif args.interactive:
-        run_interactive_map(
-            save_png=args.savepng,
-            initial_min_logit=args.minlogit,
+    inference_source = args.inference_path or INFERENCE_CSV
+    runs, directory_mode = resolve_inference_runs(inference_source)
+    if directory_mode and args.interactive and not args.savepng:
+        parser.error(
+            "Directory inference mode with --interactive requires --savepng "
+            "because the script cannot launch multiple blocking Bokeh servers."
         )
-    else:
-        run_static_map()
+
+    for run in runs:
+        if run.label:
+            print(
+                f"[INFO] Processing '{run.label}' from {run.inference_csv}."
+            )
+        else:
+            print(f"[INFO] Processing {run.inference_csv}.")
+
+        if args.animate:
+            run_animated_map(run, save_png=args.savepng, min_logit=args.logit)
+        elif args.interactive:
+            run_interactive_map(
+                run,
+                save_png=args.savepng,
+                initial_min_logit=args.minlogit,
+                launch_server=not directory_mode,
+            )
+        else:
+            run_static_map(run)
 
 
 if __name__ == "__main__":
