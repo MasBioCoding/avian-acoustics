@@ -9,6 +9,7 @@ birdnet_data_pipeline/
 ├── environment.yml          # Conda specification for the pipeline runtime
 ├── conda_packages_ext.txt   # Optional personal package additions
 ├── README.md                # You are here
+├── paper_visuals/           # One-off figure generation scripts for manuscript visuals
 ├── birdnet_pi/              # Raspberry Pi specific helpers
 │   ├── process_species_pi.py
 │   ├── umap_app_pi.py
@@ -76,6 +77,20 @@ Store custom configs alongside the templates and reference them with the `--conf
 ## Xeno Canto
 I suggest this page to gain insight into the available recordings and the name usage of Xeno Canto.
 https://xeno-canto.org/collection/species/all?area=europe
+
+To count foreground vs background recordings for a fixed species list without
+downloading audio, use:
+
+```bash
+python xc_scripts/count_foreground_background_recordings.py
+```
+
+The script defaults to `Emberiza citrinella`, `Emberiza calandra`,
+`Phylloscopus collybita`, `Phylloscopus trochilus`, and `Prunella modularis`
+for the interval `[2014-01-01, 2026-01-01)` inside the bounding box
+`lat 30..82, lon -35..45`, with a recording-length filter of `len:5-200`.
+It also reports unique recordist-name counts per species across foreground and
+background combined. Set `XENO_CANTO_API_KEY` first, or pass `--key`.
 
 ## Running the Pipeline
 
@@ -149,6 +164,23 @@ Once the Bokeh server is running, the browser app loads a UMAP projection on the
 - `Zoom to Selection` recomputes the UMAP layout using only the currently selected (use box selection tool), visible points, while `Reset to Full Dataset` restores the original dataset.  
 - Zooming can occasionally trigger a bug that leaves most points invisible; this is a known issue slated for a future fix. If it happens, reset to the full dataset to recover.
 
+## Conceptual Regression Demo
+
+Use `xc_scripts/ridge_regression_head_demo.py` when you want a standalone,
+synthetic visualization of how an L2-regularized linear head can learn to
+predict longitude/latitude from embeddings. The script exports a single HTML
+with a Europe basemap, viridis-colored train/test overlays, a highlighted test
+prediction (`PC`) versus its true coordinate (`TC`), and animated optimization
+curves that step through training epochs.
+
+```bash
+python xc_scripts/ridge_regression_head_demo.py
+```
+
+Pass `--output /path/to/demo.html` to change the export location, or adjust
+`--epochs`, `--learning-rate`, `--ridge-lambda`, `--train-size`, and
+`--test-size` if you want a different synthetic training story.
+
 ## Raspberry Pi Workflow
 
 The `birdnet_pi` directory mirrors the Xeno-Canto tooling but targets BirdNET exports generated on a Raspberry Pi.
@@ -170,6 +202,21 @@ The `birdnet_pi` directory mirrors the Xeno-Canto tooling but targets BirdNET ex
    bokeh serve --show birdnet_pi/umap_app_pi.py --args --species "Merel"
    ```  
    Use `--output` if the embeddings reside outside the repository structure.
+
+## Paper Visuals
+
+Use `paper_visuals/spectromethods.py` when you want a standalone spectrogram figure
+from one audio file rather than the batch spectrogram generation used elsewhere in
+the pipeline. The script accepts a start and end time, resamples audio to 32 kHz,
+renders a mel spectrogram capped at 16 kHz by default, and clamps the requested
+end time to the file duration when needed.
+
+```bash
+python paper_visuals/spectromethods.py /path/to/recording.mp3 --start 10 --end 40
+```
+
+By default the image is written to `paper_visuals/output/`. Pass `--output` to
+choose a different filename or directory.
 
 ## Additional Notes
 
