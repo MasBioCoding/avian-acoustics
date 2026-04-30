@@ -72,21 +72,21 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/metadata.csv")
 # May point to a single inference.csv or to a directory whose immediate
 # subfolders each contain their own inference.csv.
-# INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/inference.csv")
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/emberiza_citrinella")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/inference.csv")
+# INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/phylloscopus_collybita")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")
 ANIMATION_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/animations/emberiza_calandra/song_down"
+    "/Users/masjansma/Desktop/scriptie/results2/animations/prunella_modularis/calls"
 )
 INTERACTIVE_PNG_OUTPUT_DIR = Path(
-    "/Users/masjansma/Desktop/scriptie/results/statics/emberiza_calandra/song_down"
+    "/Users/masjansma/Desktop/scriptie/results2/statics/prunella_modularis/calls"
 )
 ANIMATION_PNG_SCALE_FACTOR = 1
-MAP_TITLE_TEXT = "Emberiza citrinella"
+MAP_TITLE_TEXT = "Prunella modularis"
 
 FILTER_ONE_PER_RECORDIST = True
 

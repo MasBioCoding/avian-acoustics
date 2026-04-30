@@ -11,6 +11,11 @@ Usage:
         --target "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/phylloscopus_collybita/song_down/inference.csv" \
         --reference "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/phylloscopus_collybita/song_updown/inference.csv" \
         --output "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/phylloscopus_collybita/song_no_updown/inference.csv"
+        
+        python xc_scripts/trim_target_by_reference.py \
+        --target "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/prunella_modularis/songs/inference.csv" \
+        --reference "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/prunella_modularis/song_trill/inference.csv" \
+        --output "/Volumes/Z Slim/zslim_birdcluster/agile_inferences/prunella_modularis/song_no_trill/inference.csv"
 
     python xc_scripts/trim_target_by_reference.py \
         --target /path/to/target.csv \
