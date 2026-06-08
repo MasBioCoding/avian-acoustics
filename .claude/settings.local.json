@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -)",
+      "Read(//Volumes/Z Slim/zslim_birdcluster/spectrograms/phylloscopus_collybita/**)"
+    ]
+  }
+}
