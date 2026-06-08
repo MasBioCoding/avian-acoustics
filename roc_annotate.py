@@ -40,7 +40,7 @@ and ROC-AUC estimates are conditional on score>0 (inflated P(+), deflated AUC).
 Typical usage::
 
     python roc_annotate.py --target-class chirp_pclip --selftest   # headless check
-    python roc_annotate.py --target-class chirp_pclip --open       # launch the UI
+    python roc_annotate.py --target-class song_updown --open       # launch the UI
 """
 
 from __future__ import annotations
