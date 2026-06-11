@@ -14,16 +14,20 @@ Pipeline (see README at bottom of this docstring for the why of each step):
     2. Map each WAV filename -> (xcid, clip_index) -> metadata.csv row, to attach
        the recordist and lat/lon.  (``<species>_<xcid>_<clip>.wav``: the LAST two
        underscore-separated tokens are the xcid and the clip index.)
-    3. De-duplicate to at most one clip per unique recordist, keeping that
+    3. (Optional) Score filter(s): prune the pool to clips scoring at or above
+       a logit threshold on a *different* classifier run of the same species
+       (``--filter CLASS[:THRESHOLD]``), e.g. keep only songs via the
+       song-vs-call classifier when annotating a song dialect.
+    4. De-duplicate to at most one clip per unique recordist, keeping that
        recordist's highest-scoring clip.
-    4. (Optional) Geographic filter: draw a polygon on the map; only candidates
+    5. (Optional) Geographic filter: draw a polygon on the map; only candidates
        whose lat/lon fall inside are kept.  Included/excluded points are plotted
        and counted as a sanity check.
-    5. Stratified sample: bucket the surviving candidates into *logarithmic*
+    6. Stratified sample: bucket the surviving candidates into *logarithmic*
        score quantiles (bottom 50%, next 25%, next 12.5%, ...) and draw up to
        SAMPLES_PER_BUCKET per bucket with a fixed SEED.
-    6. Annotate the sampled spectrograms in a grid (positive / negative).
-    7. Compute call density P(+) (Beta posteriors + bootstrap CI) and the
+    7. Annotate the sampled spectrograms in a grid (positive / negative).
+    8. Compute call density P(+) (Beta posteriors + bootstrap CI) and the
        quantile-decomposed ROC-AUC, and render paper-ready viridis figures.
 
 Server uses only the standard library.  ``numpy`` + ``matplotlib`` are imported
@@ -33,6 +37,7 @@ Paths derive from ``--data-root`` + ``--species-slug`` + ``--target-class``:
     inference    : <data_root>/agile_inferences/<species>/<target_class>/inference.csv
     metadata     : <data_root>/embeddings/<species>/metadata.csv
     spectrograms : <data_root>/spectrograms/<species>
+    filter runs  : <data_root>/agile_inferences/<species>/<filter_class>/inference.csv
 so ``--target-class`` alone selects the run.  Use the *full* (untruncated)
 inference.csv — including the many score<0 windows — otherwise the call-density
 and ROC-AUC estimates are conditional on score>0 (inflated P(+), deflated AUC).
@@ -40,7 +45,9 @@ and ROC-AUC estimates are conditional on score>0 (inflated P(+), deflated AUC).
 Typical usage::
 
     python roc_annotate.py --target-class chirp_pclip --selftest   # headless check
-    python roc_annotate.py --target-class song_updown --open       # launch the UI
+    python roc_annotate.py --target-class song_trill --open       # launch the UI
+    python roc_annotate.py --target-class song_trill \
+        --filter songs:0 --open      # candidate pool = songs only
 """
 
 from __future__ import annotations
@@ -75,7 +82,7 @@ DATA_ROOT = Path(os.environ.get("BIRDCLUSTER_DATA_ROOT", "/Volumes/Z Slim/zslim_
 
 # The "entry name": the class to score.  It is also the agile_inferences run
 # folder, so this single knob selects which inference.csv to load.
-SPECIES_SLUG = "phylloscopus_collybita"
+SPECIES_SLUG = "prunella_modularis"
 TARGET_CLASS = "chirp_pclip"
 INFERENCE_NAME = None  # agile_inferences run folder; defaults to TARGET_CLASS
 
@@ -97,11 +104,17 @@ LABEL_COLUMN = "label"
 # Optional: keep only rows whose LABEL_COLUMN equals this value.  Off by default
 # because the agile_inferences folder already scopes the file to one class.
 LABEL_FILTER = None
+# Optional: prune the candidate pool with *other* classifiers from the same
+# species' agile_inferences folder.  Each entry is "CLASS[:THRESHOLD]" (default
+# threshold 0): a candidate survives only if its clip scores at or above the
+# threshold on that run.  E.g. ["song_vs_call:0"] keeps songs and drops calls
+# while annotating a song dialect.  CLI ``--filter`` overrides this list.
+SCORE_FILTERS: list[str] = []
 
 # Sampling protocol (Section 2.2).
 DEDUP_BY_RECORDIST = True
 NUM_QUANTILE_BUCKETS = 6      # bottom 50%, 25%, 12.5%, 6.25%, 3.125%, top 3.125%
-SAMPLES_PER_BUCKET = 20       # "K" examples validated per bucket
+SAMPLES_PER_BUCKET = 40       # "K" examples validated per bucket
 SEED = 13                     # reproducible sampling
 
 # Estimation.
@@ -188,8 +201,29 @@ class JoinStats:
     unparsed_filename: int = 0
     metadata_missing: int = 0
     joined: int = 0
+    after_filters: int = 0
     recordists: int = 0
     after_dedup: int = 0
+
+
+@dataclass
+class ScoreFilter:
+    """Candidate-pool filter: a second classifier's logits + a threshold.
+
+    Candidates survive only if their clip scores at or above ``threshold`` on
+    this run (e.g. a song-vs-call classifier with threshold 0 keeps songs).
+    Filters run before recordist dedup, so dedup picks each recordist's best
+    clip *among those that pass*.
+    """
+
+    name: str
+    threshold: float
+    inference_csv: Path
+    scores: dict[str, float] = field(default_factory=dict, repr=False)
+    # Funnel counters, filled while filtering: a candidate stops at the first
+    # filter that rejects it, so later filters never see it.
+    excluded_below: int = 0
+    missing_score: int = 0
 
 
 # ----------------------------------------------------------------------------
@@ -363,6 +397,68 @@ def _dedup_sort_key(cand: Candidate) -> tuple[float, int, int]:
 
 
 # ----------------------------------------------------------------------------
+# Score filters (prune the pool with a second classifier, e.g. song vs call)
+# ----------------------------------------------------------------------------
+def parse_filter_spec(spec: str) -> tuple[str, float]:
+    """Parse ``"CLASS[:THRESHOLD]"`` into ``(class_name, threshold)``."""
+
+    name, sep, raw = spec.partition(":")
+    name = name.strip()
+    if not name:
+        raise SystemExit(f"Invalid --filter spec: {spec!r} (expected CLASS[:THRESHOLD])")
+    if not sep or not raw.strip():
+        return name, 0.0
+    try:
+        return name, float(raw)
+    except ValueError:
+        raise SystemExit(f"Invalid --filter threshold in {spec!r} (need a number)")
+
+
+def load_filter_scores(
+    inference_csv: Path, *, score_column: str, filename_column: str
+) -> dict[str, float]:
+    """Map WAV basename -> logit from one filter run's inference.csv."""
+
+    scores: dict[str, float] = {}
+    with inference_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        require_columns(reader.fieldnames, {score_column, filename_column}, inference_csv)
+        for row in reader:
+            filename = Path((row.get(filename_column) or "").strip()).name
+            score = to_float(row.get(score_column))
+            if filename and score is not None:
+                scores[filename] = score
+    return scores
+
+
+def apply_score_filters(
+    candidates: list[Candidate], filters: list[ScoreFilter]
+) -> list[Candidate]:
+    """Keep candidates whose clip passes every filter.
+
+    A clip passes one filter when its logit in that run is at or above the
+    threshold; clips absent from a filter's inference.csv are rejected and
+    counted separately (``missing_score``).
+    """
+
+    if not filters:
+        return candidates
+    kept: list[Candidate] = []
+    for cand in candidates:
+        for flt in filters:
+            score = flt.scores.get(cand.filename)
+            if score is None:
+                flt.missing_score += 1
+                break
+            if score < flt.threshold:
+                flt.excluded_below += 1
+                break
+        else:
+            kept.append(cand)
+    return kept
+
+
+# ----------------------------------------------------------------------------
 # Geographic polygon filter
 # ----------------------------------------------------------------------------
 def point_in_polygon(lat: float, lon: float, polygon: list[list[float]]) -> bool:
@@ -450,9 +546,11 @@ def stratified_sample(
 ) -> tuple[list[SampledItem], list[dict[str, Any]]]:
     """Bucket candidates by log score-quantile and sample K from each.
 
-    Returns the sampled items (in bucket order, then by descending score) and a
-    per-bucket summary.  ``weight = population / sampled`` lets the annotated
-    sample stand in for the bucket population in the empirical ROC.
+    Returns the sampled items in a seeded *random* display order (so the
+    annotator never sees clips sorted by score or grouped by bucket, which would
+    anchor labels on the classifier's confidence) plus a per-bucket summary.
+    ``weight = population / sampled`` lets the annotated sample stand in for the
+    bucket population in the empirical ROC.
     """
 
     import random
@@ -498,7 +596,6 @@ def stratified_sample(
 
         take = population if samples_per_bucket <= 0 else min(samples_per_bucket, population)
         chosen = members if take >= population else rng.sample(members, take)
-        chosen = sorted(chosen, key=lambda c: -c.score)
         weight = population / take if take else 0.0
         for cand in chosen:
             items.append(
@@ -523,6 +620,9 @@ def stratified_sample(
                 "score_max": max(c.score for c in members),
             }
         )
+    # Randomise the grid order across all buckets (seeded -> reproducible) so
+    # display order carries no information about score or bucket.
+    rng.shuffle(items)
     return items, summaries
 
 
@@ -659,6 +759,12 @@ def compute_metrics(
                     float(x) for x in beta_ci(alpha[b], beta[b], np)
                 ],
                 "local_auc": float(local[b]),
+                # Beta posterior params (ridgeline figure) + Bayes-rule
+                # conditionals (kept for metrics.json).
+                "alpha": float(alpha[b]),
+                "beta": float(beta[b]),
+                "p_b_given_pos": float(p_b_given_pos[b]),
+                "p_c_given_neg": float(p_c_given_neg[b]),
             }
         )
 
@@ -716,7 +822,13 @@ def empirical_weighted_roc(
     tpr = np.concatenate([[0.0], tp])
     trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
     auc = float(trapezoid(tpr, fpr))
-    return auc, {"fpr": fpr.tolist(), "tpr": tpr.tolist()}
+    # thresholds[i] is the classifier logit of the point added at vertex i+1
+    # (i.e. the score *above* which points count positive at that vertex).
+    return auc, {
+        "fpr": fpr.tolist(),
+        "tpr": tpr.tolist(),
+        "thresholds": scores[order].tolist(),
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -732,7 +844,12 @@ def render_figures(
     species_slug: str,
     output_dir: Path,
 ) -> list[str]:
-    """Render and save the four paper figures.  Returns saved file paths."""
+    """Render and save the paper figures.  Returns saved file paths.
+
+    Figures: score distribution, per-bucket P(+|b), the weighted empirical ROC
+    (threshold-labelled), call-density bootstrap, per-bucket Beta posteriors,
+    bucket-population sanity check, and an AUC estimator comparison.
+    """
 
     import matplotlib
 
@@ -837,26 +954,42 @@ def render_figures(
     ax.set_title(f"{title_prefix}: positive rate per score bucket")
     _save(fig, "positive_rate_per_bucket")
 
-    # (3) ROC curve (weighted empirical) + decomposition AUC.
-    fig, ax = plt.subplots(figsize=(5.4, 5.2))
-    roc = metrics["roc_auc"]["_weighted_roc"]
+    def _style_roc_axes(ax: Any) -> None:
+        ax.set_xlabel("false positive rate")
+        ax.set_ylabel("true positive rate")
+        ax.set_xlim(-0.01, 1.01)
+        ax.set_ylim(-0.01, 1.01)
+        ax.set_aspect("equal")
+
+    auc = metrics["roc_auc"]
+
+    # The decomposed-ROC figure was removed; drop any stale copy so the output
+    # folder only holds figures the current code produces.
+    (output_dir / f"{target_class}_roc_curve_decomposed.png").unlink(missing_ok=True)
+
+    # (3) Empirical ROC: the actual stratum-weighted curve over the sample.
+    fig, ax = plt.subplots(figsize=(5.6, 5.6))
+    roc = auc["_weighted_roc"]
     ax.plot([0, 1], [0, 1], ls=":", color="#999999", lw=1.0)
     if roc["fpr"]:
-        ax.plot(roc["fpr"], roc["tpr"], color=cmap(0.35), lw=2.4,
-                label=f"weighted empirical (AUC={metrics['roc_auc']['weighted_empirical']:.3f})")
-    auc = metrics["roc_auc"]
-    ax.set_xlabel("false positive rate")
-    ax.set_ylabel("true positive rate")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_aspect("equal")
-    ax.set_title(
-        f"{title_prefix}: ROC\n"
-        f"decomposition AUC = {auc['point']:.3f} "
-        f"[{auc['ci95'][0]:.3f}, {auc['ci95'][1]:.3f}]"
-    )
-    ax.legend(loc="lower right")
-    _save(fig, "roc_curve")
+        ax.plot(roc["fpr"], roc["tpr"], color=cmap(0.30), lw=2.0,
+                label=f"weighted empirical (AUC={auc['weighted_empirical']:.3f})")
+        thr = roc.get("thresholds", [])
+        if thr:
+            idxs = sorted({int(round(x)) for x in np.linspace(0, len(thr) - 1, 6)})
+            for i in idxs:
+                fx, fy = roc["fpr"][i + 1], roc["tpr"][i + 1]
+                ax.plot(fx, fy, "o", color=cmap(0.30), ms=4, zorder=7)
+                ax.annotate(f"{thr[i]:.1f}", (fx, fy), textcoords="offset points",
+                            xytext=(4, -10), fontsize=7.5, color="#444444")
+    _style_roc_axes(ax)
+    ax.set_title(f"{title_prefix}: empirical ROC\n"
+                 f"weighted AUC = {auc['weighted_empirical']:.3f}")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.text(0.5, -0.16, "number labels = classifier logit threshold",
+            transform=ax.transAxes, ha="center", va="top", fontsize=7.5,
+            color="#666666", style="italic")
+    _save(fig, "roc_curve_empirical")
 
     # (4) Call density P(+) bootstrap distribution.
     fig, ax = plt.subplots(figsize=(7.2, 4.2))
@@ -871,6 +1004,83 @@ def render_figures(
     ax.set_title(f"{title_prefix}: estimated call density")
     ax.legend(loc="upper right")
     _save(fig, "call_density")
+
+    # (5) Per-bucket Beta posteriors for P(+|bucket): a ridgeline.
+    fig, ax = plt.subplots(figsize=(7.2, 4.8))
+    grid = np.linspace(0.0, 1.0, 400)
+    log_g = np.log(np.clip(grid, 1e-9, 1.0))
+    log_1mg = np.log(np.clip(1.0 - grid, 1e-9, 1.0))
+    yticks, ylabels = [], []
+    for b, (pb, color) in enumerate(zip(metrics["per_bucket"], bucket_colors)):
+        a, bt = pb["alpha"], pb["beta"]
+        log_norm = math.lgamma(a + bt) - math.lgamma(a) - math.lgamma(bt)
+        pdf = np.exp((a - 1.0) * log_g + (bt - 1.0) * log_1mg + log_norm)
+        peak = float(pdf.max())
+        if peak > 0:
+            pdf = pdf / peak                      # normalise height (ridgeline)
+        base = float(b)
+        ax.fill_between(grid, base, base + pdf, color=color, alpha=0.7, lw=0)
+        ax.plot(grid, base + pdf, color="white", lw=0.8)
+        ax.plot([pb["p_pos_given_b"]] * 2, [base, base + 1.0],
+                color="#222222", lw=1.0, ls="--", alpha=0.6)
+        yticks.append(base)
+        ylabels.append(f"b{b}  ({pb['positive']}/{pb['annotated']})")
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(ylabels)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.1, n_buckets + 0.1)
+    ax.set_xlabel("P(+ | bucket)")
+    ax.set_title(f"{title_prefix}: per-bucket Beta posteriors  (dashed = posterior mean)")
+    ax.grid(axis="y", visible=False)
+    _save(fig, "beta_posteriors")
+
+    # (6) Sanity: empirical bucket fractions vs nominal log-quantile fractions.
+    fig, ax = plt.subplots(figsize=(7.2, 4.2))
+    xs = list(range(n_buckets))
+    emp = [s["p_b"] for s in bucket_summaries]
+    nom = [s["p_b_construction"] for s in bucket_summaries]
+    width = 0.4
+    ax.bar([x - width / 2 for x in xs], emp, width, color=bucket_colors,
+           alpha=0.9, edgecolor="white", label="empirical  P(b) = pop / total")
+    ax.bar([x + width / 2 for x in xs], nom, width, color="#bbbbbb",
+           alpha=0.8, edgecolor="white", label="nominal (log-quantile)")
+    for x, s in zip(xs, bucket_summaries):
+        ax.text(x, max(s["p_b"], s["p_b_construction"]) + 0.012,
+                f"n={s['population']}", ha="center", va="bottom",
+                fontsize=8, color="#444444")
+    ax.set_xticks(xs)
+    ax.set_xticklabels([f"b{b}" for b in xs])
+    ax.set_xlabel("log-quantile bucket")
+    ax.set_ylabel("P(bucket)")
+    ax.set_title(f"{title_prefix}: bucket population vs construction")
+    ax.legend(loc="upper right", fontsize=9)
+    _save(fig, "bucket_population")
+
+    # (7) Sanity: do the three AUC estimators agree?  (rare/common check)
+    fig, ax = plt.subplots(figsize=(7.2, 3.2))
+    rows = [
+        ("decomposition", auc["point"], auc["ci95"]),
+        ("weighted empirical", auc["weighted_empirical"], None),
+        ("raw empirical", auc["raw_empirical"], None),
+    ]
+    ys = list(range(len(rows) - 1, -1, -1))
+    for y, (_, val, ci) in zip(ys, rows):
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            continue
+        if ci is not None:
+            ax.plot(ci, [y, y], color=cmap(0.30), lw=2.0, zorder=4)
+            for edge in ci:
+                ax.plot([edge, edge], [y - 0.09, y + 0.09], color=cmap(0.30), lw=2.0)
+        ax.plot(val, y, "o", color=cmap(0.75), ms=10, zorder=6)
+        ax.annotate(f"{val:.3f}", (val, y), textcoords="offset points",
+                    xytext=(0, 11), ha="center", fontsize=9)
+    ax.axvline(0.5, color="#999999", ls=":", lw=1.0)
+    ax.set_yticks(ys)
+    ax.set_yticklabels([r[0] for r in rows])
+    ax.set_ylim(-0.5, len(rows) - 0.5)
+    ax.set_xlabel("ROC-AUC")
+    ax.set_title(f"{title_prefix}: AUC estimator comparison")
+    _save(fig, "auc_comparison")
 
     return saved
 
@@ -889,6 +1099,16 @@ def require_columns(fieldnames: list[str] | None, required: set[str], path: Path
 def require_readable_file(path: Path, label: str) -> None:
     if not path.is_file():
         raise SystemExit(f"{label} not found: {path}")
+
+
+def available_runs_hint(inference_csv: Path) -> str:
+    """A ``\\n  available runs: ...`` hint listing sibling run folders (or '')."""
+
+    runs_dir = inference_csv.parent.parent
+    if not runs_dir.is_dir():
+        return ""
+    runs = sorted(p.name for p in runs_dir.iterdir() if p.is_dir())
+    return f"\n  available runs: {', '.join(runs)}" if runs else ""
 
 
 def json_bytes(payload: Any) -> bytes:
@@ -956,6 +1176,7 @@ class AppState:
     prior_beta: float
     bootstrap_samples: int
     debug_mode: bool
+    score_filters: list[ScoreFilter] = field(default_factory=list)
     # session (set after /api/sample)
     polygon: list[list[float]] | None = None
     items: list[SampledItem] = field(default_factory=list)
@@ -1175,6 +1396,9 @@ def save_annotations(state: AppState, name: str | None = None) -> tuple[int, Pat
         "seed": state.seed,
         "n_buckets": state.n_buckets,
         "samples_per_bucket": state.samples_per_bucket,
+        "filters": [
+            {"name": f.name, "threshold": f.threshold} for f in state.score_filters
+        ],
         "polygon": state.polygon,
         "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -1267,8 +1491,14 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "label_matched": s.label_matched,
                 "joined": s.joined,
                 "metadata_missing": s.metadata_missing,
+                "after_filters": s.after_filters,
                 "after_dedup": s.after_dedup,
             },
+            "filters": [
+                {"name": f.name, "threshold": f.threshold,
+                 "excluded_below": f.excluded_below, "missing_score": f.missing_score}
+                for f in state.score_filters
+            ],
             "candidates": [candidate_public(c) for c in state.candidates],
             "annotation_sets": state.list_annotation_sets(),
             "polygons": load_polygons(state.polygons_path),
@@ -1576,6 +1806,7 @@ def build_html() -> str:
           <div class="stat"><span>Inference rows (class)</span><b id="jLabel">–</b></div>
           <div class="stat"><span>Joined to metadata</span><b id="jJoined">–</b></div>
           <div class="stat"><span>Metadata missing</span><b id="jMiss">–</b></div>
+          <div class="stat"><span>After score filters</span><b id="jFilt">–</b></div>
           <div class="stat"><span>After recordist dedup</span><b id="jDedup">–</b></div>
         </div>
       </div>
@@ -1704,13 +1935,17 @@ async function boot(){
   S.init=await getJSON("/api/init");
   S.candidates=S.init.candidates;S.debug=S.init.debug_mode;
   $("title").textContent=`ROC annotation — ${S.init.target_class}`;
+  const fl=S.init.filters||[];
+  const ftxt=fl.map(f=>` · filter ${f.name}≥${f.threshold}`).join("");
   $("subtitle").textContent=
-    `${S.init.species_slug} · ${S.init.n_buckets} buckets × ${S.init.samples_per_bucket}/bucket · seed ${S.init.seed} · `+
+    `${S.init.species_slug} · ${S.init.n_buckets} buckets × ${S.init.samples_per_bucket}/bucket · seed ${S.init.seed}${ftxt} · `+
     `${S.init.inference_csv}`;
   const j=S.init.join_stats;
   $("cTotal").textContent=S.candidates.length;
   $("jLabel").textContent=j.label_matched;$("jJoined").textContent=j.joined;
-  $("jMiss").textContent=j.metadata_missing;$("jDedup").textContent=S.candidates.length;
+  $("jMiss").textContent=j.metadata_missing;
+  $("jFilt").textContent=fl.length?j.after_filters:"–";
+  $("jDedup").textContent=S.candidates.length;
   $("dbgToggle").checked=S.debug;
   S.polygons=S.init.polygons||{};
   refreshRegionSelect();
@@ -1802,10 +2037,14 @@ function cardHtml(it){
      <span>weight</span><span>${f3(it.weight)}</span>
      <span>country</span><span>${it.country||""}</span>
      <span>date</span><span>${it.date||""}</span></div>`;}
+  // The bucket colour strip encodes the score band, so it is shown only in
+  // debug mode -- by default it stays hidden to keep score perception from
+  // biasing annotation.
+  const strip=S.debug?`<div class="bstrip" style="background:${bucketColor(it.bucket_index)}"></div>`:"";
   return `<article class="card ${a}" data-k="${it.row_key}">
     <div class="imgwrap">${img}</div>
     <div class="cbody">
-      <div class="bstrip" style="background:${bucketColor(it.bucket_index)}"></div>
+      ${strip}
       <div class="btns">
         <button data-k="${it.row_key}" data-v="positive" class="${a==="positive"?"sel":""}">＋ pos</button>
         <button data-k="${it.row_key}" data-v="negative" class="${a==="negative"?"sel":""}">－ neg</button>
@@ -1908,6 +2147,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--label", default=LABEL_FILTER,
                    help="Optional: keep only rows whose label column equals this. "
                         "Off by default since the run folder already scopes the class.")
+    p.add_argument("--filter", dest="filters", action="append", default=None,
+                   metavar="CLASS[:THRESHOLD]",
+                   help="Prune the candidate pool to clips scoring at or above "
+                        "THRESHOLD (default 0) on another agile_inferences run of "
+                        "this species, e.g. 'song_vs_call:0' to keep songs and drop "
+                        "calls. Repeatable; a clip must pass every filter. Applied "
+                        "before recordist dedup and the geographic filter.")
     p.add_argument("--score-column", default=SCORE_COLUMN)
     p.add_argument("--filename-column", default=FILENAME_COLUMN)
     p.add_argument("--label-column", default=LABEL_COLUMN)
@@ -1956,17 +2202,36 @@ def build_state(args: argparse.Namespace) -> AppState:
 
     inference_csv, metadata_csv, spectrogram_dir, output_dir = resolve_paths(args)
     if not inference_csv.is_file():
-        runs_dir = inference_csv.parent.parent
-        available = (
-            sorted(p.name for p in runs_dir.iterdir() if p.is_dir())
-            if runs_dir.is_dir() else []
-        )
-        hint = f"\n  available runs: {', '.join(available)}" if available else ""
         raise SystemExit(
-            f"Inference CSV not found: {inference_csv}{hint}\n"
+            f"Inference CSV not found: {inference_csv}{available_runs_hint(inference_csv)}\n"
             "  (set --target-class / --inference-name, or pass --inference-csv)"
         )
     require_readable_file(metadata_csv, "Metadata CSV")
+
+    filters: list[ScoreFilter] = []
+    for spec in (args.filters if args.filters is not None else list(SCORE_FILTERS)):
+        name, threshold = parse_filter_spec(spec)
+        filter_csv = (
+            args.data_root.expanduser() / "agile_inferences" / args.species_slug
+            / name / "inference.csv"
+        )
+        if not filter_csv.is_file():
+            raise SystemExit(
+                f"Filter inference CSV not found: {filter_csv}"
+                f"{available_runs_hint(filter_csv)}"
+            )
+        filters.append(
+            ScoreFilter(
+                name=name,
+                threshold=threshold,
+                inference_csv=filter_csv,
+                scores=load_filter_scores(
+                    filter_csv,
+                    score_column=args.score_column,
+                    filename_column=args.filename_column,
+                ),
+            )
+        )
 
     metadata_index = load_metadata_index(metadata_csv)
     candidates, stats = load_candidates(
@@ -1978,6 +2243,8 @@ def build_state(args: argparse.Namespace) -> AppState:
         filename_column=args.filename_column,
         label_column=args.label_column,
     )
+    candidates = apply_score_filters(candidates, filters)
+    stats.after_filters = len(candidates)
     if not args.no_dedup and DEDUP_BY_RECORDIST:
         recordists = {c.recordist for c in candidates if c.recordist}
         stats.recordists = len(recordists)
@@ -1988,6 +2255,11 @@ def build_state(args: argparse.Namespace) -> AppState:
         detail = (
             f"  rows read: {stats.total_rows}, label-matched: {stats.label_matched}, "
             f"joined to metadata: {stats.joined}, metadata-missing: {stats.metadata_missing}"
+        )
+        detail += "".join(
+            f"\n  filter {f.name} (logit >= {f.threshold:g}): "
+            f"excluded {f.excluded_below} below threshold, {f.missing_score} unscored"
+            for f in filters
         )
         label_hint = (
             f"\n  (--label '{args.label}' may not match the file's label column)"
@@ -2012,6 +2284,7 @@ def build_state(args: argparse.Namespace) -> AppState:
         prior_beta=BETA_PRIOR_BETA,
         bootstrap_samples=BOOTSTRAP_SAMPLES,
         debug_mode=args.debug_mode,
+        score_filters=filters,
     )
 
 
@@ -2022,6 +2295,11 @@ def run_selftest(state: AppState) -> None:
 
     print(f"Self-test for class '{state.target_class}'")
     print(f"  joined candidates:   {state.join_stats.joined}")
+    for flt in state.score_filters:
+        print(f"  filter {flt.name} (logit >= {flt.threshold:g}): "
+              f"-{flt.excluded_below} below, -{flt.missing_score} unscored")
+    if state.score_filters:
+        print(f"  after filters:       {state.join_stats.after_filters}")
     print(f"  recordists:          {state.join_stats.recordists}")
     print(f"  after dedup:         {len(state.candidates)}")
 
@@ -2078,6 +2356,9 @@ def main() -> None:
     print("ROC annotation server")
     print(f"  URL:            {url}")
     print(f"  Target class:   {state.target_class}")
+    for flt in state.score_filters:
+        print(f"  Filter:         {flt.name} logit >= {flt.threshold:g} "
+              f"(-{flt.excluded_below} below, -{flt.missing_score} unscored)")
     print(f"  Candidates:     {len(state.candidates)} (after recordist dedup)")
     print(f"  Spectrograms:   {state.spectrogram_dir}")
     print(f"  Output:         {state.output_dir}")

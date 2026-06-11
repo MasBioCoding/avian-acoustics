@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(python3 -)",
-      "Read(//Volumes/Z Slim/zslim_birdcluster/spectrograms/phylloscopus_collybita/**)"
+      "Read(//Volumes/Z Slim/zslim_birdcluster/spectrograms/phylloscopus_collybita/**)",
+      "Bash(python3 -m py_compile roc_annotate.py)",
+      "Read(//Volumes/Z Slim/zslim_birdcluster/agile_inferences/**)",
+      "Bash(python3 roc_annotate.py --species-slug prunella_modularis --target-class song_trill --filter songs:0 --selftest)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/birdnetcluster1/bin/python3 -)",
+      "Bash(python3 roc_annotate.py --species-slug prunella_modularis --target-class song_trill --filter nonexistent --selftest)"
     ]
   }
 }
