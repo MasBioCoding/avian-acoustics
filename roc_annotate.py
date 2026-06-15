@@ -45,7 +45,7 @@ and ROC-AUC estimates are conditional on score>0 (inflated P(+), deflated AUC).
 Typical usage::
 
     python roc_annotate.py --target-class chirp_pclip --selftest   # headless check
-    python roc_annotate.py --target-class song_trill --open       # launch the UI
+    python roc_annotate.py --target-class chirp_staple --open       # launch the UI
     python roc_annotate.py --target-class song_trill \
         --filter songs:0 --open      # candidate pool = songs only
 """
@@ -82,7 +82,7 @@ DATA_ROOT = Path(os.environ.get("BIRDCLUSTER_DATA_ROOT", "/Volumes/Z Slim/zslim_
 
 # The "entry name": the class to score.  It is also the agile_inferences run
 # folder, so this single knob selects which inference.csv to load.
-SPECIES_SLUG = "prunella_modularis"
+SPECIES_SLUG = "phylloscopus_collybita"
 TARGET_CLASS = "chirp_pclip"
 INFERENCE_NAME = None  # agile_inferences run folder; defaults to TARGET_CLASS
 
@@ -740,7 +740,7 @@ def compute_metrics(
 
     # --- Diagnostics: empirical (weighted + raw) AUC on the sample -----------
     weighted_auc, weighted_roc = empirical_weighted_roc(annotated_items, np, weighted=True)
-    raw_auc, _ = empirical_weighted_roc(annotated_items, np, weighted=False)
+    raw_auc, raw_roc = empirical_weighted_roc(annotated_items, np, weighted=False)
 
     per_bucket = []
     for b, summ in enumerate(bucket_summaries):
@@ -785,6 +785,7 @@ def compute_metrics(
             "raw_empirical": raw_auc,
             "_samples": auc_samples,
             "_weighted_roc": weighted_roc,
+            "_raw_roc": raw_roc,
         },
         "per_bucket": per_bucket,
     }
@@ -967,12 +968,17 @@ def render_figures(
     # folder only holds figures the current code produces.
     (output_dir / f"{target_class}_roc_curve_decomposed.png").unlink(missing_ok=True)
 
-    # (3) Empirical ROC: the actual stratum-weighted curve over the sample.
+    # (3) Empirical ROC: the stratum-weighted curve over the sample, with the
+    # unweighted (raw-sample) curve drawn alongside for comparison.
     fig, ax = plt.subplots(figsize=(5.6, 5.6))
     roc = auc["_weighted_roc"]
+    raw = auc.get("_raw_roc") or {"fpr": [], "tpr": []}
     ax.plot([0, 1], [0, 1], ls=":", color="#999999", lw=1.0)
+    if raw["fpr"]:
+        ax.plot(raw["fpr"], raw["tpr"], color=cmap(0.65), lw=1.8, ls="--",
+                zorder=5, label=f"unweighted empirical (AUC={auc['raw_empirical']:.3f})")
     if roc["fpr"]:
-        ax.plot(roc["fpr"], roc["tpr"], color=cmap(0.30), lw=2.0,
+        ax.plot(roc["fpr"], roc["tpr"], color=cmap(0.30), lw=2.0, zorder=6,
                 label=f"weighted empirical (AUC={auc['weighted_empirical']:.3f})")
         thr = roc.get("thresholds", [])
         if thr:
@@ -984,7 +990,8 @@ def render_figures(
                             xytext=(4, -10), fontsize=7.5, color="#444444")
     _style_roc_axes(ax)
     ax.set_title(f"{title_prefix}: empirical ROC\n"
-                 f"weighted AUC = {auc['weighted_empirical']:.3f}")
+                 f"weighted AUC = {auc['weighted_empirical']:.3f}   "
+                 f"unweighted AUC = {auc['raw_empirical']:.3f}")
     ax.legend(loc="lower right", fontsize=9)
     ax.text(0.5, -0.16, "number labels = classifier logit threshold",
             transform=ax.transAxes, ha="center", va="top", fontsize=7.5,
@@ -1675,6 +1682,7 @@ def strip_samples(metrics: dict[str, Any]) -> dict[str, Any]:
     roc = clean.get("roc_auc", {})
     roc.pop("_samples", None)
     roc.pop("_weighted_roc", None)
+    roc.pop("_raw_roc", None)
     return clean
 
 
