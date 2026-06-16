@@ -46,8 +46,8 @@ Typical usage::
 
     python roc_annotate.py --target-class chirp_pclip --selftest   # headless check
     python roc_annotate.py --target-class chirp_staple --open       # launch the UI
-    python roc_annotate.py --target-class song_trill \
-        --filter songs:0 --open      # candidate pool = songs only
+    python roc_annotate.py --target-class south_song \
+        --filter song:0 --open      # candidate pool = songs only
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ DATA_ROOT = Path(os.environ.get("BIRDCLUSTER_DATA_ROOT", "/Volumes/Z Slim/zslim_
 
 # The "entry name": the class to score.  It is also the agile_inferences run
 # folder, so this single knob selects which inference.csv to load.
-SPECIES_SLUG = "phylloscopus_collybita"
+SPECIES_SLUG = "emberiza_calandra"
 TARGET_CLASS = "chirp_pclip"
 INFERENCE_NAME = None  # agile_inferences run folder; defaults to TARGET_CLASS
 
@@ -835,6 +835,24 @@ def empirical_weighted_roc(
 # ----------------------------------------------------------------------------
 # Paper-ready figures (viridis)
 # ----------------------------------------------------------------------------
+# Shared visual language with the Bokeh figures of xc_scripts/kde_map_animate.py
+# (the "Monthly sample size" panel): a viridis-dark plot panel, light-blue
+# border, green bars, and that panel's font sizes.  The score-distribution
+# figure adds two annotation accents (yellow positives, red negatives) and a
+# yellow bucket-boundary line, taken from the map's isocline anchors.
+FIG_TITLE_FONT_SIZE = 24             # MONTHLY_SAMPLE_TITLE_FONT_SIZE ("24pt")
+FIG_TITLE_PAD = 13                   # raise the bold title a sliver (~7px) off the panel
+FIG_AXIS_LABEL_FONT_SIZE = 20        # MONTHLY_SAMPLE_AXIS_LABEL_FONT_SIZE ("20pt")
+FIG_AXIS_MAJOR_LABEL_FONT_SIZE = 16  # MONTHLY_SAMPLE_AXIS_MAJOR_LABEL_FONT_SIZE
+FIG_BACKGROUND_COLOR = "#404788"     # plot-area fill (viridis dark blue)
+FIG_BORDER_COLOR = "#dcecf7"         # figure fill outside the axes (light blue)
+FIG_DATAPOINT_COLOR = "#73D055"      # histogram bars (viridis green)
+FIG_DATAPOINT_ALPHA = 0.85
+FIG_BUCKET_COLOR = "#f4d03f"         # dashed log-quantile bucket boundaries
+FIG_POSITIVE_COLOR = "#f4d03f"       # positive annotation rug
+FIG_NEGATIVE_COLOR = "#e53935"       # negative annotation rug
+
+
 def render_figures(
     *,
     metrics: dict[str, Any],
@@ -889,70 +907,85 @@ def render_figures(
     title_prefix = f"{species_slug} / {target_class}"
 
     # (1) Score distribution with bucket boundaries + annotated rug.
+    # Styled to match the Bokeh "Monthly sample size" panel of
+    # xc_scripts/kde_map_animate.py: viridis-dark panel, green bars, yellow/red
+    # annotation accents, that panel's font sizes, plus a right-hand axis that
+    # labels where the negative (0) and positive (1) rugs sit.
     fig, ax = plt.subplots(figsize=(7.2, 4.2))
+    fig.patch.set_facecolor(FIG_BORDER_COLOR)
+    ax.set_facecolor(FIG_BACKGROUND_COLOR)
+    ax.grid(axis="x", visible=False)
+    ax.grid(axis="y", color="white", alpha=0.15)
     if population_scores:
-        ax.hist(population_scores, bins=40, color=cmap(0.55), alpha=0.45,
-                edgecolor="white", linewidth=0.4, label="candidate population")
-    for summ, color in zip(bucket_summaries, bucket_colors):
+        # No stroke; instead leave a thin gap between bars (rwidth < 1) that
+        # reads like the former 0.4pt white edge, revealing the dark panel.
+        ax.hist(population_scores, bins=40, color=FIG_DATAPOINT_COLOR,
+                alpha=FIG_DATAPOINT_ALPHA, edgecolor="none", rwidth=0.96,
+                label="candidate population")
+    for summ in bucket_summaries:
         if summ["score_max"] is not None:
-            ax.axvline(summ["score_max"], color=color, lw=1.0, ls="--", alpha=0.7)
+            ax.axvline(summ["score_max"], color=FIG_BUCKET_COLOR, lw=1.2,
+                       ls=":", alpha=0.9)
     pos = [it["score"] for it in annotated_items if it["annotation"] == "positive"]
     neg = [it["score"] for it in annotated_items if it["annotation"] == "negative"]
-    ymax = ax.get_ylim()[1]
-    ax.plot(neg, [ymax * 0.04] * len(neg), "|", color=cmap(0.15),
+    y0, y1 = ax.get_ylim()
+    y_neg, y_pos = y1 * 0.04, y1 * 0.09       # rug heights (unchanged positions)
+    ax.plot(neg, [y_neg] * len(neg), "|", color=FIG_NEGATIVE_COLOR,
             ms=12, mew=1.4, label=f"negative (n={len(neg)})")
-    ax.plot(pos, [ymax * 0.09] * len(pos), "|", color=cmap(0.85),
+    ax.plot(pos, [y_pos] * len(pos), "|", color=FIG_POSITIVE_COLOR,
             ms=12, mew=1.4, label=f"positive (n={len(pos)})")
-    ax.set_xlabel("classifier logit")
-    ax.set_ylabel("count")
-    ax.set_title(f"{title_prefix}: score distribution & log-quantile buckets")
-    ax.legend(loc="upper right")
+    ax.set_ylim(y0, y1)
+    ax.set_xlabel("Logit score", fontsize=FIG_AXIS_LABEL_FONT_SIZE)
+    ax.set_ylabel("count", fontsize=FIG_AXIS_LABEL_FONT_SIZE)
+    ax.set_title("Score distributions", fontsize=FIG_TITLE_FONT_SIZE,
+                 fontweight="bold", pad=FIG_TITLE_PAD)
+    ax.tick_params(axis="both", labelsize=FIG_AXIS_MAJOR_LABEL_FONT_SIZE)
+
+    # Right-hand axis: annotation labels (negative = 0, positive = 1) aligned to
+    # the existing rug heights, without moving the rugs themselves.
+    ax2 = ax.twinx()
+    ax2.set_ylim(y0, y1)
+    ax2.set_yticks([y_neg, y_pos])
+    ax2.set_yticklabels(["0", "1"])
+    ax2.set_ylabel("annotation", fontsize=FIG_AXIS_LABEL_FONT_SIZE)
+    ax2.tick_params(axis="y", labelsize=FIG_AXIS_MAJOR_LABEL_FONT_SIZE)
+    ax2.spines["right"].set_visible(True)
+    ax2.grid(False)
+
+    leg = ax.legend(loc="upper right", fontsize=11)
+    for text in leg.get_texts():
+        text.set_color("white")
     _save(fig, "score_distribution")
 
-    # (2) Per-bucket P(+|b): Beta posterior mean + CI, with raw fraction overlaid.
-    from matplotlib.lines import Line2D
-
-    fig, ax = plt.subplots(figsize=(7.2, 4.4))
+    # (2) Per-bucket P(+|b): Beta posterior mean + CI.
+    # Same figure size, palette and fonts as the score-distribution figure
+    # (dark panel, green bars, light-blue accents).
+    fig, ax = plt.subplots(figsize=(7.2, 4.2))
+    fig.patch.set_facecolor(FIG_BORDER_COLOR)
+    ax.set_facecolor(FIG_BACKGROUND_COLOR)
+    ax.grid(axis="x", visible=False)
+    ax.grid(axis="y", color="white", alpha=0.15)
     xs = list(range(n_buckets))
     means = [pb["p_pos_given_b"] for pb in metrics["per_bucket"]]
     los = [pb["p_pos_ci"][0] for pb in metrics["per_bucket"]]
     his = [pb["p_pos_ci"][1] for pb in metrics["per_bucket"]]
     err = [[m - lo for m, lo in zip(means, los)], [hi - m for m, hi in zip(means, his)]]
-    raw = [
-        (pb["positive"] / pb["annotated"]) if pb["annotated"] else None
-        for pb in metrics["per_bucket"]
-    ]
-    ax.bar(xs, means, color=bucket_colors, alpha=0.85, edgecolor="white")
-    ax.errorbar(xs, means, yerr=err, fmt="none", ecolor="#222222", capsize=4, lw=1.2)
-    rx = [x for x, r in zip(xs, raw) if r is not None]
-    ry = [r for r in raw if r is not None]
-    ax.scatter(rx, ry, marker="D", s=34, facecolor="white", edgecolor="#222222",
-               linewidth=1.4, zorder=6)
+    # No stroke; keep the default bar width/spacing.
+    ax.bar(xs, means, color=FIG_DATAPOINT_COLOR, alpha=FIG_DATAPOINT_ALPHA,
+           edgecolor="none")
+    ax.errorbar(xs, means, yerr=err, fmt="none", ecolor=FIG_BORDER_COLOR,
+                capsize=4, lw=1.2)
     for x, pb in zip(xs, metrics["per_bucket"]):
         ax.text(x, 1.03, f"{pb['positive']}/{pb['annotated']}",
-                ha="center", va="bottom", fontsize=9, color="#444444")
-    ax.legend(
-        handles=[
-            Line2D([0], [0], color="#222222", lw=1.2, label="95% credible interval"),
-            Line2D([0], [0], marker="D", color="none", markerfacecolor="white",
-                   markeredgecolor="#222222", markersize=7,
-                   label="raw fraction (positives / annotated)"),
-        ],
-        loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2, fontsize=9,
-    )
-    ax.text(
-        0.5, -0.27,
-        "bars: posterior-mean estimate of P(+ | bucket) — shrinks toward 0.5 "
-        "when a bucket has few labels",
-        transform=ax.transAxes, ha="center", va="top", fontsize=8.5,
-        color="#666666", style="italic",
-    )
+                ha="center", va="bottom", fontsize=11, color="white")
     ax.set_xticks(xs)
     ax.set_xticklabels([f"b{b}" for b in xs])
     ax.set_ylim(0, 1.15)
-    ax.set_xlabel("log-quantile bucket")
-    ax.set_ylabel("P(+ | bucket)")
-    ax.set_title(f"{title_prefix}: positive rate per score bucket")
+    ax.set_xlabel("bucket", fontsize=FIG_AXIS_LABEL_FONT_SIZE)
+    ax.set_ylabel("P(+ | bucket)", fontsize=FIG_AXIS_LABEL_FONT_SIZE)
+    ax.set_title("Positive rate per bucket", fontsize=FIG_TITLE_FONT_SIZE,
+                 fontweight="bold", pad=FIG_TITLE_PAD)
+    ax.tick_params(axis="both", labelsize=FIG_AXIS_MAJOR_LABEL_FONT_SIZE)
     _save(fig, "positive_rate_per_bucket")
 
     def _style_roc_axes(ax: Any) -> None:
