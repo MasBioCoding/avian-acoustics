@@ -72,10 +72,10 @@ except Exception:  # noqa: BLE001
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/metadata.csv")
+METADATA_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/metadata.csv")
 # May point to a single inference.csv or to a directory whose immediate
 # subfolders each contain their own inference.csv.
-INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/prunella_modularis/inference.csv")
+INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/emberiza_calandra/inference.csv")
 # INFERENCE_CSV = Path("/Volumes/Z Slim/zslim_birdcluster/embeddings/phylloscopus_collybita/phylloscopus_collybita")
 OUTPUT_HTML = Path("ingroup_kde_map.html")
 ANIMATION_OUTPUT_HTML = Path("ingroup_kde_map_animated.html")

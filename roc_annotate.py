@@ -45,9 +45,11 @@ and ROC-AUC estimates are conditional on score>0 (inflated P(+), deflated AUC).
 Typical usage::
 
     python roc_annotate.py --target-class chirp_pclip --selftest   # headless check
-    python roc_annotate.py --target-class chirp_staple --open       # launch the UI
-    python roc_annotate.py --target-class south_song \
-        --filter song:0 --open      # candidate pool = songs only
+    python roc_annotate.py --target-class calls --open       # launch the UI
+    python roc_annotate.py --target-class chirp_down \
+        --filter chirps:0 --open      # candidate pool = songs only
+    python roc_annotate.py --target-class chirp_down \
+        --filter calls:0 chirps:0 --open   # pool = clips passing BOTH filters
 """
 
 from __future__ import annotations
@@ -82,7 +84,7 @@ DATA_ROOT = Path(os.environ.get("BIRDCLUSTER_DATA_ROOT", "/Volumes/Z Slim/zslim_
 
 # The "entry name": the class to score.  It is also the agile_inferences run
 # folder, so this single knob selects which inference.csv to load.
-SPECIES_SLUG = "emberiza_calandra"
+SPECIES_SLUG = "prunella_modularis"
 TARGET_CLASS = "chirp_pclip"
 INFERENCE_NAME = None  # agile_inferences run folder; defaults to TARGET_CLASS
 
@@ -2188,13 +2190,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--label", default=LABEL_FILTER,
                    help="Optional: keep only rows whose label column equals this. "
                         "Off by default since the run folder already scopes the class.")
-    p.add_argument("--filter", dest="filters", action="append", default=None,
+    p.add_argument("--filter", dest="filters", action="extend", nargs="+", default=None,
                    metavar="CLASS[:THRESHOLD]",
                    help="Prune the candidate pool to clips scoring at or above "
                         "THRESHOLD (default 0) on another agile_inferences run of "
                         "this species, e.g. 'song_vs_call:0' to keep songs and drop "
-                        "calls. Repeatable; a clip must pass every filter. Applied "
-                        "before recordist dedup and the geographic filter.")
+                        "calls. Stackable: pass several space-separated "
+                        "(--filter calls:0 chirps:0) or repeat the flag; a clip "
+                        "must pass every filter. Applied before recordist dedup "
+                        "and the geographic filter.")
     p.add_argument("--score-column", default=SCORE_COLUMN)
     p.add_argument("--filename-column", default=FILENAME_COLUMN)
     p.add_argument("--label-column", default=LABEL_COLUMN)
