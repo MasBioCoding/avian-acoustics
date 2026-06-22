@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Western Palearctic</title>
+    <style>
+      html, body {
+        box-sizing: border-box;
+        display: flow-root;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+    <script type="text/javascript" src="https://cdn.bokeh.org/bokeh/release/bokeh-3.4.2.min.js"></script>
+    <script type="text/javascript">
+        Bokeh.set_log_level("info");
+    </script>
+  </head>
+  <body>
+    <div id="f843d7c7-252f-4242-b926-b364b1429b27" data-root-id="p1003" style="display: contents;"></div>
+  
+    <script type="application/json" id="fd8754bb-c383-424b-9ae1-eb12d8523589">
+      {"d0661283-a3af-4df0-b6f6-c1b50e03d42d":{"version":"3.4.2","title":"Bokeh Application","roots":[{"type":"object","name":"Figure","id":"p1003","attributes":{"width":2700,"height":4082,"x_range":{"type":"object","name":"Range1d","id":"p1001","attributes":{"start":-3896182.1777645745,"end":5009377.085697311}},"y_range":{"type":"object","name":"Range1d","id":"p1002","attributes":{"start":3503549.8435043744,"end":16967796.943510607}},"x_scale":{"type":"object","name":"LinearScale","id":"p1013"},"y_scale":{"type":"object","name":"LinearScale","id":"p1014"},"title":{"type":"object","name":"Title","id":"p1006","attributes":{"text":"Western Palearctic","text_font_size":"180pt","text_font_style":"bold"}},"renderers":[{"type":"object","name":"TileRenderer","id":"p1030","attributes":{"tile_source":{"type":"object","name":"WMTSTileSource","id":"p1029","attributes":{"url":"https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}","max_zoom":8,"attribution":"Tiles &amp;copy; Esri &amp;mdash; Source: US National Park Service"}}}}],"toolbar":{"type":"object","name":"Toolbar","id":"p1012","attributes":{"tools":[{"type":"object","name":"PanTool","id":"p1025"},{"type":"object","name":"WheelZoomTool","id":"p1026","attributes":{"renderers":"auto"}},{"type":"object","name":"ResetTool","id":"p1027"},{"type":"object","name":"SaveTool","id":"p1028"}]}},"left":[{"type":"object","name":"MercatorAxis","id":"p1020","attributes":{"ticker":{"type":"object","name":"MercatorTicker","id":"p1021","attributes":{"mantissas":[1,2,5],"dimension":"lat"}},"formatter":{"type":"object","name":"MercatorTickFormatter","id":"p1022","attributes":{"dimension":"lat"}},"axis_label":"Latitude (\u00b0)","axis_label_text_font_size":"120pt","axis_label_text_font_style":"normal","major_label_policy":{"type":"object","name":"AllLabels","id":"p1023"},"major_label_text_font_size":"90pt"}}],"below":[{"type":"object","name":"MercatorAxis","id":"p1015","attributes":{"ticker":{"type":"object","name":"MercatorTicker","id":"p1016","attributes":{"mantissas":[1,2,5],"dimension":"lon"}},"formatter":{"type":"object","name":"MercatorTickFormatter","id":"p1017","attributes":{"dimension":"lon"}},"axis_label":"Longitude (\u00b0)","axis_label_text_font_size":"120pt","axis_label_text_font_style":"normal","major_label_policy":{"type":"object","name":"AllLabels","id":"p1018"},"major_label_text_font_size":"90pt"}}],"center":[{"type":"object","name":"Grid","id":"p1019","attributes":{"visible":false,"axis":{"id":"p1015"}}},{"type":"object","name":"Grid","id":"p1024","attributes":{"visible":false,"dimension":1,"axis":{"id":"p1020"}}}],"background_fill_color":"#dcecf7","border_fill_color":"#dcecf7","match_aspect":true}}]}}
+    </script>
+    <script type="text/javascript">
+      (function() {
+        const fn = function() {
+          Bokeh.safely(function() {
+            (function(root) {
+              function embed_document(root) {
+              const docs_json = document.getElementById('fd8754bb-c383-424b-9ae1-eb12d8523589').textContent;
+              const render_items = [{"docid":"d0661283-a3af-4df0-b6f6-c1b50e03d42d","roots":{"p1003":"f843d7c7-252f-4242-b926-b364b1429b27"},"root_ids":["p1003"]}];
+              root.Bokeh.embed.embed_items(docs_json, render_items);
+              }
+              if (root.Bokeh !== undefined) {
+                embed_document(root);
+              } else {
+                let attempts = 0;
+                const timer = setInterval(function(root) {
+                  if (root.Bokeh !== undefined) {
+                    clearInterval(timer);
+                    embed_document(root);
+                  } else {
+                    attempts++;
+                    if (attempts > 100) {
+                      clearInterval(timer);
+                      console.log("Bokeh: ERROR: Unable to run BokehJS code because BokehJS library is missing");
+                    }
+                  }
+                }, 10, root)
+              }
+            })(window);
+          });
+        };
+        if (document.readyState != "loading") fn();
+        else document.addEventListener("DOMContentLoaded", fn);
+      })();
+    </script>
+  </body>
+</html>

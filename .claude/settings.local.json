@@ -7,7 +7,15 @@
       "Read(//Volumes/Z Slim/zslim_birdcluster/agile_inferences/**)",
       "Bash(python3 roc_annotate.py --species-slug prunella_modularis --target-class song_trill --filter songs:0 --selftest)",
       "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/birdnetcluster1/bin/python3 -)",
-      "Bash(python3 roc_annotate.py --species-slug prunella_modularis --target-class song_trill --filter nonexistent --selftest)"
+      "Bash(python3 roc_annotate.py --species-slug prunella_modularis --target-class song_trill --filter nonexistent --selftest)",
+      "Bash(conda env *)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/birdnetcluster1/bin/python -c 'import bokeh, pyproj, numpy, pandas; print\\('\\\\''bokeh'\\\\'', bokeh.__version__\\); print\\('\\\\''pyproj'\\\\'', pyproj.__version__\\); *)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/thesis/bin/python -c ' *)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/thesis/bin/python -c \"import kde_map_animate as k; print\\('import ok'\\); print\\('provider resolves:', k.resolve_tile_provider\\(k.MAP_BASE_PROVIDER\\) is not None\\)\")",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/thesis/bin/python geo_filter_visual.py --no-show)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/thesis/bin/python geo_filter_visual.py --no-show --savepng)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/thesis/bin/python -)"
     ]
   }
 }
