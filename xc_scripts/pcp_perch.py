@@ -10,6 +10,7 @@ Run with:
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_linaria_cannabina.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_emberiza_calandra.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_curruca_communis.yaml
+    bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_emberiza_citrinella.yaml
 
 """
 
@@ -65,11 +66,11 @@ CATEGORY_FOLDERS = {
 }
 ACTIVE_PCP_GROUPS_LABEL = "active pcp_groups"
 COLOR_PALETTE = [
-    "#4477AA",
-    "#EE6677",
-    "#228833",
-    "#CCBB44",
-    "#66CCEE",
+    "#3b528b",  # viridis blue
+    "#5ec962",  # viridis green
+    "#21918c",  # turquoise
+    "#fde725",  # yellow
+    "#440154",  # viridis dark blue/purple
 ]
 HDBSCAN_PALETTE = [
     "#4e79a7",
@@ -1666,8 +1667,8 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         height=620,
         sizing_mode="stretch_width",
         toolbar_location="above",
-        tools="pan,wheel_zoom,reset",
-        background_fill_color="#f7f4ed",
+        tools="pan,wheel_zoom,reset,save",
+        background_fill_color="#ffffff",
     )
     pcp_line_renderer = pcp_plot.multi_line(
         xs="xs",
@@ -1697,6 +1698,9 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
     )
     pcp_plot.xaxis.axis_label = "UMAP dimensions"
     pcp_plot.yaxis.axis_label = "UMAP value"
+    pcp_plot.axis.axis_label_text_font_size = "48px"
+    pcp_plot.axis.major_label_text_font_size = "72px"
+    pcp_plot.title.text_font_size = "96px"
     pcp_plot.grid.minor_grid_line_color = None
     pcp_plot.toolbar.autohide = True
     pcp_plot.xaxis.ticker = []
@@ -5570,7 +5574,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         )
         pcp_plot.xaxis.ticker = list(range(dims))
         pcp_plot.xaxis.major_label_overrides = {
-            idx: f"Dim {idx + 1} (σ={sigma[idx]:.3g})" for idx in range(dims)
+            idx: str(idx + 1) for idx in range(dims)
         }
         pcp_status_box.text = (
             f"Parallel coordinates plotted for {projection.shape[0]} points "

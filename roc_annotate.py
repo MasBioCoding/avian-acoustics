@@ -45,10 +45,10 @@ and ROC-AUC estimates are conditional on score>0 (inflated P(+), deflated AUC).
 Typical usage::
 
     python roc_annotate.py --target-class chirp_pclip --selftest   # headless check
-    python roc_annotate.py --target-class calls --open       # launch the UI
+    python roc_annotate.py --target-class chirp_pclip --open       # launch the UI
     python roc_annotate.py --target-class chirp_down \
         --filter chirps:0 --open      # candidate pool = songs only
-    python roc_annotate.py --target-class chirp_down \
+    python roc_annotate.py --target-class song_updown \
         --filter calls:0 chirps:0 --open   # pool = clips passing BOTH filters
 """
 
@@ -84,7 +84,7 @@ DATA_ROOT = Path(os.environ.get("BIRDCLUSTER_DATA_ROOT", "/Volumes/Z Slim/zslim_
 
 # The "entry name": the class to score.  It is also the agile_inferences run
 # folder, so this single knob selects which inference.csv to load.
-SPECIES_SLUG = "prunella_modularis"
+SPECIES_SLUG = "phylloscopus_collybita"
 TARGET_CLASS = "chirp_pclip"
 INFERENCE_NAME = None  # agile_inferences run folder; defaults to TARGET_CLASS
 
