@@ -10,7 +10,7 @@ Run with:
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_linaria_cannabina.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_emberiza_calandra.yaml
     bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_curruca_communis.yaml
-    bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_emberiza_citrinella.yaml
+    bokeh serve --show xc_scripts/pcp_perch.py --args --config xc_configs_perch/config_emberiza_calandra.yaml
 
 """
 
@@ -68,9 +68,21 @@ ACTIVE_PCP_GROUPS_LABEL = "active pcp_groups"
 COLOR_PALETTE = [
     "#3b528b",  # viridis blue
     "#5ec962",  # viridis green
-    "#21918c",  # turquoise
     "#fde725",  # yellow
+    "#21918c",  # turquoise
     "#440154",  # viridis dark blue/purple
+]
+VIRIDIS_COLOR_OPTIONS = [
+    ("#440154", "dark purple"),
+    ("#482878", "purple"),
+    ("#3e4989", "blue purple"),
+    ("#31688e", "blue"),
+    ("#26828e", "teal"),
+    ("#1f9e89", "green teal"),
+    ("#35b779", "green"),
+    ("#6ece58", "light green"),
+    ("#b5de2b", "yellow green"),
+    ("#fde725", "yellow"),
 ]
 HDBSCAN_PALETTE = [
     "#4e79a7",
@@ -1374,6 +1386,11 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         sizing_mode="scale_width",
         styles={"gap": "6px", "flex-wrap": "wrap", "align-items": "flex-start"},
     )
+    group_color_overrides: dict[str, str] = {}
+    group_color_selects_holder = column(
+        sizing_mode="scale_width",
+        styles={"margin-top": "6px", "gap": "4px"},
+    )
     hdbscan_clusters_label = Div(
         text="HDBSCAN clusters",
         visible=False,
@@ -2644,8 +2661,21 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
 
     pcp_line_width_spinner.on_change("value", on_pcp_line_width_change)
 
+    def entry_color_key(category: str, entry: dict[str, Any]) -> str:
+        label = entry.get("label") or entry.get("stem") or ""
+        return f"{category}::{label}"
+
+    def resolve_group_color(
+        category: str, entry: dict[str, Any], idx: int
+    ) -> str:
+        override = group_color_overrides.get(entry_color_key(category, entry))
+        if override:
+            return override
+        return COLOR_PALETTE[idx] if idx < len(COLOR_PALETTE) else "#b0b0b0"
+
     def update_color_assignments() -> None:
         mode = color_mode_select.value
+        group_color_selects_holder.children = []
         show_energy_controls = mode == "Energy distance"
         energy_color_midpoint_checkbox.visible = show_energy_controls
         energy_color_midpoint_slider.visible = show_energy_controls
@@ -2759,21 +2789,66 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
             return
 
         active_entries = collect_color_entries()
-        html_entries: list[str] = []
+        select_rows: list[Any] = []
         for idx, (cat, entry) in enumerate(active_entries):
             label = entry.get("label") or entry.get("stem") or f"group_{idx + 1}"
-            color = COLOR_PALETTE[idx] if idx < len(COLOR_PALETTE) else "#b0b0b0"
-            color_box = (
-                f"<span style='display:inline-block;width:14px;height:14px;"
-                f"background:{color};margin-right:6px;border-radius:3px;'></span>"
+            color = resolve_group_color(cat, entry, idx)
+            swatch = Div(
+                text=(
+                    f"<span style='display:inline-block;width:14px;height:14px;"
+                    f"background:{color};border-radius:3px;'></span>"
+                ),
+                width=20,
             )
-            html_entries.append(
-                f"<div style='margin-bottom:4px;'>{color_box}"
-                f"{html.escape(cat)} / {html.escape(label)}</div>"
+            name_div = Div(
+                text=f"{html.escape(cat)} / {html.escape(label)}",
+                styles={"color": "#3a3426"},
+                width=230,
+            )
+            if idx >= len(COLOR_PALETTE):
+                name_div.text += " <em>(no color slot)</em>"
+                select_rows.append(
+                    row(
+                        swatch,
+                        name_div,
+                        sizing_mode="fixed",
+                        styles={"align-items": "center", "gap": "6px"},
+                    )
+                )
+                continue
+            options = list(VIRIDIS_COLOR_OPTIONS)
+            if color not in {value for value, _ in options}:
+                options.insert(0, (color, f"default ({color})"))
+            color_select = Select(value=color, options=options, width=150)
+
+            def _on_group_color_change(
+                attr: str,
+                old: str,
+                new: str,
+                color_key: str = entry_color_key(cat, entry),
+                swatch_div: Div = swatch,
+            ) -> None:
+                group_color_overrides[color_key] = new
+                swatch_div.text = (
+                    f"<span style='display:inline-block;width:14px;height:14px;"
+                    f"background:{new};border-radius:3px;'></span>"
+                )
+                apply_color_selection()
+
+            color_select.on_change("value", _on_group_color_change)
+            select_rows.append(
+                row(
+                    swatch,
+                    name_div,
+                    color_select,
+                    sizing_mode="fixed",
+                    styles={"align-items": "center", "gap": "6px"},
+                )
             )
 
-        if html_entries:
-            color_assignments_box.text = "".join(html_entries)
+        group_color_selects_holder.children = select_rows
+        if select_rows:
+            color_assignments_box.text = ""
         else:
             color_assignments_box.text = "<em>Select up to 5 groups to assign colors.</em>"
 
@@ -3633,10 +3708,10 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
                 return key_strings
 
             key_to_color: dict[str, str] = {}
-            for color_idx, (_category_label, entry) in enumerate(color_entries):
+            for color_idx, (category_label, entry) in enumerate(color_entries):
                 if color_idx >= len(COLOR_PALETTE):
                     break
-                color_value = COLOR_PALETTE[color_idx]
+                color_value = resolve_group_color(category_label, entry, color_idx)
                 for key_str in _entry_key_strings(entry):
                     key_to_color[key_str] = color_value
 
@@ -7092,6 +7167,7 @@ def create_layout(*, species_options: list[str], groups_root: Path) -> None:
         active_pcp_groups_section,
         hdbscan_clusters_label,
         hdbscan_checklist,
+        group_color_selects_holder,
         color_assignments_box,
         width=520,
         sizing_mode="fixed",
